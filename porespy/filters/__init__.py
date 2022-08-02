@@ -55,6 +55,10 @@ image, but with altered values.
     filters.trim_nonpercolating_paths
     filters.trim_saddle_points
     filters.trim_small_clusters
+    filters.find_junctions
+    filters.find_pore_bodies
+    filters.find_throat_skeleton
+    filters.spheres_to_network
 
 
 """
@@ -80,6 +84,11 @@ from ._funcs import trim_extrema
 from ._funcs import trim_floating_solid
 from ._funcs import trim_nonpercolating_paths
 from ._funcs import trim_small_clusters
+from ._magnet import find_junctions
+from ._magnet import find_pore_bodies
+from ._magnet import find_throat_skeleton
+from ._magnet import reduce_peaks
+from ._magnet import spheres_to_network
 from ._snows import snow_partitioning
 from ._snows import snow_partitioning_n
 from ._snows import snow_partitioning_parallel
