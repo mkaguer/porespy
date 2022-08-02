@@ -84,7 +84,6 @@ from ._snows import snow_partitioning
 from ._snows import snow_partitioning_n
 from ._snows import snow_partitioning_parallel
 from ._snows import find_peaks
-from ._snows import reduce_peaks
 from ._snows import trim_nearby_peaks
 from ._snows import trim_saddle_points
 from ._snows import trim_saddle_points_legacy
