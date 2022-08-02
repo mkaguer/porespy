@@ -549,6 +549,33 @@ class FilterTest():
         hits = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 16, 17, 19, 31, 32, 37]
         assert np.all(hits == np.unique(s)[1:])
 
+    def test_find_junctions(self):
+        im = ps.generators.blobs(shape=[300, 300], porosity=0.7, blobiness=2)
+        sk = skeletonize_3d(im) > 0
+        pt = ps.filters.find_junctions(sk=sk)
+        assert pt.sum() > 0
+        assert np.shape(pt)==np.shape(im)
+
+    def test_find_pore_buddies(self):
+        im = ps.generators.blobs(shape=[300, 300], porosity=0.7, blobiness=2)
+        dt = edt(im)
+        sk = skeletonize_3d(im) > 0
+        pt = ps.filters.find_junctions(sk=sk)
+        fbd = ps.filters.find_pore_buddies(pt, dt)
+        assert fbd.Ps.sum() > 0
+        assert np.shape(fbd.Ps) == np.shape(fbd.Ps2)
+        assert np.shape(fbd.pores) == np.shape(fbd.throats)
+
+    def test_find_throat_skeleton(self):
+        im = ps.generators.blobs(shape=[300, 300], porosity=0.7, blobiness=2)
+        dt = edt(im)
+        sk = skeletonize_3d(im) > 0
+        pt = ps.filters.find_junctions(sk=sk)
+        fbd = ps.filters.find_pore_buddies(pt, dt)
+        ts = ps.filters.find_throat_skeleton(sk, fbd.pores, fbd.throats)
+        assert ts.sum() > 0
+        assert np.shape(ts) == np.shape(im)
+
 
 if __name__ == '__main__':
     t = FilterTest()
