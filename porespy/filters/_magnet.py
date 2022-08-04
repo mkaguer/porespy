@@ -97,7 +97,7 @@ def find_pore_bodies(im, sk, pt, dt):
         d = np.flip(d[d[:, 2].argsort()], axis=0)
         for n, (i, j, k) in enumerate(d):
             if Ps2[i, j] == 0:
-                ss = n + Ps1_number
+                ss = n + Ps1_number + 1
                 insert_sphere(im=Ps2, c=np.hstack((i, j)), r=dt[i, j]/1.,
                               v=ss+1, overwrite=False)
     else:
