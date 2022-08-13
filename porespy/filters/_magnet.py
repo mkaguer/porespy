@@ -218,7 +218,7 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
         im_w_throats_l = spim.binary_dilation(input=throat_im,
                                               structure=structure)
         im_w_throats_l = im_w_throats_l * sub_sk
-        im_w_throats_l = im_w_throats_l*sub_im_p
+        im_w_throats_l = im_w_throats_l * sub_im_p
         Pn_l = np.unique(im_w_throats_l)[1:] - 1
         if np.any(Pn_l):
             Pn_l = Pn_l[0:2]
@@ -275,23 +275,6 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
     P12 = net['throat.conns']
     net['pore.volume'] = np.copy(p_volume)*(voxel_size**ND)
     net['pore.surface_area'] = np.copy(p_area_surf)*(voxel_size**2)
-    # write models for all of these!!
-    net['throat.global_peak'] = np.array(t_coords)*voxel_size
-    t_perimeter = []
-    t_perimeter.append(np.sum(sub_dt[vx] < 2))
-    net['throat.perimeter'] = np.array(t_perimeter)*voxel_size
-    net['pore.inscribed_diameter'] = np.copy(p_dia_local)*voxel_size
-    net['pore.extended_diameter'] = np.copy(p_dia_global)*voxel_size
-    t_dia_inscribed = []
-    t_dia_inscribed.append(2*np.amax(sub_dt[vx]))
-    net['throat.inscribed_diameter'] = np.array(t_dia_inscribed)*voxel_size
-    PT1 = np.sqrt(np.sum(((p_coords[P12[:, 0]]-t_coords)*voxel_size)**2,
-                         axis=1))
-    PT2 = np.sqrt(np.sum(((p_coords[P12[:, 1]]-t_coords)*voxel_size)**2,
-                         axis=1))
-    net['throat.total_length'] = PT1 + PT2
-    dist = (p_coords[P12[:, 0]] - p_coords[P12[:, 1]])*voxel_size
-    net['throat.direct_length'] = np.sqrt(np.sum(dist**2, axis=1))
     return net
 
 
