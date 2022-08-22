@@ -178,7 +178,7 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
         s = spim.generate_binary_structure(2, 2)
     throats, num_throats = spim.label(throats, structure=s)
     slicess = spim.find_objects(throats)  # Nt by 2
-    t_conns = np.zeros(np.shape(slicess), dtype=int)  # initialize
+    t_conns = np.zeros((len(slicess), 2), dtype=int)  # initialize
     t_coords = []
     phases = (fbd + throats > 0).astype(int)
     dt = edt(phases == 1)
