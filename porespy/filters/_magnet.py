@@ -6,6 +6,7 @@ from skimage.segmentation import find_boundaries
 from porespy import settings
 from porespy.tools import insert_sphere, make_contiguous, get_tqdm
 from porespy.tools import extend_slice, Results
+import dask
 tqdm = get_tqdm()
 
 
@@ -195,18 +196,16 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
     p_dia_global = np.zeros((Np, ), dtype=float)
     p_area_surf = np.zeros((Np, ), dtype=int)
     p_label = np.zeros((Np, ), dtype=int)
-    p_phase = np.zeros((Np, ), dtype=int)
     tqdm = get_tqdm()
 
-    for i in range(num_throats):
-        throat_l = i
-        if slicess[throat_l] is None:
-            continue
-        ss = extend_slice(slicess[throat_l], fbd.shape)
+    # Parallelize throat for loop with dask
+    @dask.delayed
+    def throat_props(throat, i):
+        ss = extend_slice(slicess[throat], fbd.shape)
         sub_im_p = fbd[ss]
         sub_im_l = throats[ss]
         throat_im = sub_im_l == i+1
-        padded_mask = np.pad(throat_im, pad_width=1, mode='constant')
+        # padded_mask = np.pad(throat_im, pad_width=1, mode='constant')
         if len(fbd.shape) == 3:
             structure = spim.generate_binary_structure(3, 2)
         else:
@@ -219,17 +218,30 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
         Pn_l = np.unique(im_w_throats_l)[1:] - 1
         if np.any(Pn_l):
             Pn_l = Pn_l[0:2]
-            t_conns[throat_l, :] = Pn_l
+            t_conns[throat, :] = Pn_l
+        # FIXME: This might be something to refactor
         for j in Pn_l:
             vx = np.where(im_w_throats_l == (j + 1))
             s_offset = np.array([i.start for i in ss])
             t_inds = tuple([i+j for i, j in zip(vx, s_offset)])
             temp = np.where(dt[t_inds] == np.amax(dt[t_inds]))[0][0]
+            # FIXME: t_coords is 2*Nt long b/c it has the coords of the ends
             t_coords.append(tuple([t_inds[k][temp] for k in range(im.ndim)]))
-    for i in tqdm(Ps, **settings.tqdm):
-        pore = i - 1
-        if slices[pore] is None:
+            # fast marching method but slowish!! Take average.
+            # or dt transform multiplied by skeleton and middle value is the smallest dt value. do this!
+
+    delays = []
+    for i in range(num_throats):
+        throat_l = i
+        if slicess[throat_l] is None:
             continue
+        delay = throat_props(throat_l, i)
+        delays.append(delay)
+    dask.compute(*delays)
+
+    # Parallelize pore for loop with dask
+    @dask.delayed
+    def pore_props(pore, i):
         s = extend_slice(slices[pore], fbd.shape)
         sub_im = fbd[s]
         sub_dt = dt[s]
@@ -247,6 +259,16 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
         p_dia_local[pore] = 2*np.amax(pore_dt)
         p_dia_global[pore] = 2*np.amax(sub_dt)
         p_area_surf[pore] = np.sum(pore_dt == 1)
+
+    delays = []
+    for i in tqdm(Ps, **settings.tqdm):
+        pore = i - 1
+        if slices[pore] is None:
+            continue
+        delay = pore_props(pore, i)
+        delays.append(delay)
+    dask.compute(*delays)
+
     # Clean up values
     p_coords = p_coords_cm
     if im.ndim == 2:  # If 2D, add 0's in 3rd dimension
@@ -267,7 +289,6 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
     net['pore.local_peak'] = np.copy(p_coords_dt)*voxel_size
     net['pore.global_peak'] = np.copy(p_coords_dt_global)*voxel_size
     net['pore.geometric_centroid'] = np.copy(p_coords_cm)*voxel_size
-    P12 = net['throat.conns']
     net['pore.volume'] = np.copy(p_volume)*(voxel_size**ND)
     net['pore.surface_area'] = np.copy(p_area_surf)*(voxel_size**2)
     return net
