@@ -316,3 +316,145 @@ def reduce_peaks(peaks):
     peaks_new = np.zeros_like(peaks, dtype=bool)
     peaks_new[tuple(inds.T)] = True
     return peaks_new
+
+
+if __name__ == "__main__":
+    
+    '''
+
+    Simulation using MAGNET extraction
+
+    '''
+
+    # import packages
+    import numpy as np
+    import porespy as ps
+    import openpnm as op
+    import skimage as ski
+    import imageio
+    import matplotlib.pyplot as plt
+    import time
+    from edt import edt
+    from skimage import io
+
+    ps.visualization.set_mpl_style()
+    np.random.seed(10)
+
+    # %% Generate a test image
+    im = ps.generators.blobs(shape=[400, 400], porosity=0.7, blobiness=2)
+    plt.figure(1)
+    plt.imshow(np.flip(im.T, axis=0))
+    plt.axis('off')
+    # Parameters
+    mu = 1  # Pa s
+    Pin = 1  # 10kPa/m
+    Pout = 0
+    Delta_P = Pin - Pout
+    A = 1e-2
+    L = 1e-5
+
+    # %% MAGNET Extraction
+    start_m = time.time()
+    # create skeleton
+    sk = ski.morphology.skeletonize_3d(im)/255
+    # find all the junctions
+    pt = ps.filters.find_junctions(sk)
+    # distance transform
+    dt = edt(im)
+    # find pore bodies
+    fbd = ps.filters.find_pore_bodies(im, sk, pt, dt)
+    # throat segmentation
+    ts = ps.filters.find_throat_skeleton(im, sk, fbd.Ps2)
+    # create network object
+    throats = ts.throats + ts.internal_throats
+    checkpoint_m = time.time()
+    net = ps.filters.spheres_to_network(im=im, sk=sk, fbd=fbd.Ps2, throats=throats,
+                                        voxel_size=1)
+    end_m = time.time()
+    print('MAGNET Extraction Complete')
+    net_m = op.network.from_porespy(net)
+
+    # find surface pores
+    op.topotools.find_surface_pores(net_m)
+    surface_pores = net_m['pore.surface']
+
+    # label left, right, back, and front pores
+    [a, b] = [30, 375]
+    net_m['pore.left'] = np.zeros(net_m.Np, dtype=bool)
+    net_m['pore.left'][surface_pores] = net_m['pore.coords'][surface_pores][:, 0] < a
+    net_m['pore.right'] = np.zeros(net_m.Np, dtype=bool)
+    net_m['pore.right'][surface_pores] = net_m['pore.coords'][surface_pores][:, 0] > b
+
+    # Move boundary pores to edge of domain
+    # left
+    left = net_m.pores('left')
+    temp = np.zeros(net_m.Np)
+    temp[left] = net_m['pore.coords'][:, 0][left]
+    net_m['pore.coords'][:, 0] -= temp  # don't index pore.coords
+    # right
+    right = net_m.pores('right')
+    temp = np.zeros(net_m.Np)
+    temp[right] = net_m['pore.coords'][:, 0][right] - im.shape[0]
+    net_m['pore.coords'][:, 0] -= temp  # don't index pore.coords
+
+    # network health
+    h = op.utils.check_network_health(net_m)
+    dis_pores = np.zeros(net_m.Np, dtype=bool)
+    dis_pores[h['disconnected_pores']] = True
+    net_m['pore.disconnected_pores'] = dis_pores
+    Ps_trim = h['disconnected_pores']
+    Ts_trim = np.append(h['duplicate_throats'], h['looped_throats'])
+    op.topotools.trim(net_m, pores=Ps_trim, throats=Ts_trim)
+    
+    # visualize MAGNET network
+    plt.figure(2)
+    fig, ax = plt.subplots(figsize=[5, 5]);
+    slice_m = im.T
+    ax.imshow(slice_m, cmap=plt.cm.bone)
+    op.visualization.plot_coordinates(ax=fig,
+                                  network=net_m,
+                                  size_by=net_m["pore.equivalent_diameter"],
+                                  color_by=net_m["pore.left"],
+                                  markersize=200)
+    op.visualization.plot_connections(network=net_m, ax=fig)
+    ax.axis("off");
+    print('Visualization Complete')
+
+    # %% Run Stokes Flow algorithm on extracted network
+    # collection of geometry models, delete pore.diameter and pore.volume models
+    geo = op.models.collections.geometry.spheres_and_cylinders
+    del geo['pore.diameter'], geo['pore.volume']
+    # set pore.diameter
+    net_m['pore.diameter'] = net_m['pore.equivalent_diameter'].copy()
+    # add geometry models to network
+    net_m.add_model_collection(geo)
+    net_m.regenerate_models()
+
+    # phase
+    phase_m = op.phase.Phase(network=net_m)
+    phase_m['pore.viscosity'] = mu
+
+    # add physics models to geometry
+    phys = op.models.collections.physics.basic
+    phase_m.add_model_collection(phys)
+    phase_m.regenerate_models()
+
+    # Stokes flow algorithm on MAGNET network
+    inlet_m = net_m.pores('left')
+    outlet_m = net_m.pores('right')
+    flow_m = op.algorithms.StokesFlow(network=net_m, phase=phase_m)
+    flow_m.set_value_BC(pores=inlet_m, values=Pin)
+    flow_m.set_value_BC(pores=outlet_m, values=Pout)
+    flow_m.run()
+    print('MAGNET Simulation Complete')
+
+    # Calculate permeability from MAGNET extraction
+    Q_m = flow_m.rate(pores=inlet_m, mode='group')[0]
+    K_m = Q_m * L * mu / (A * Delta_P)
+    print(f'MAGNET K is: {K_m/0.98e-12*1000:.2f} mD')
+
+    # Calculate extraction times and output
+    time_m = end_m - start_m
+    time_s2n = end_m - checkpoint_m
+    print(f'MAGNET extraction time is: {time_m:.2f} s')
+    print(f'Spheres to Network time is: {time_s2n:.2f} s')
