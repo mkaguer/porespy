@@ -180,11 +180,8 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
     slicess = spim.find_objects(throats)  # Nt by 2
     t_conns = np.zeros((len(slicess), 2), dtype=int)  # initialize
     t_coords = []
-    phases = (fbd + throats > 0).astype(int)
-    dt = edt(phases == 1)
-    # Add distane transform for more than 2 phases
-    for i in range(2, phases.max()+1):
-        dt += edt(phases == i)
+    # distance transform of network space
+    dt = edt((fbd + throats > 0).astype(int))
     fbd = make_contiguous(fbd)
     slices = spim.find_objects(fbd)
     # Initialize arrays
@@ -244,7 +241,6 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
         p_coords_cm[pore, :] = spim.center_of_mass(pore_im) + s_offset
         temp = np.vstack(np.where(pore_dt == pore_dt.max()))[:, 0]
         p_coords_dt[pore, :] = temp + s_offset
-        p_phase[pore] = (phases[s]*pore_im).max()
         temp = np.vstack(np.where(sub_dt == sub_dt.max()))[:, 0]
         p_coords_dt_global[pore, :] = temp + s_offset
         p_volume[pore] = np.sum(pore_im)
@@ -263,7 +259,6 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
     net['pore.coords'] = np.array(p_coords)*voxel_size
     net['pore.all'] = np.ones_like(net['pore.coords'][:, 0], dtype=bool)
     net['pore.region_label'] = np.array(p_label)
-    net['pore.phase'] = np.array(p_phase, dtype=int)
     V = np.copy(p_volume)*(voxel_size**ND)
     net['pore.region_volume'] = V  # This will be an area if image is 2D
     f = 3/4 if ND == 3 else 1.0
