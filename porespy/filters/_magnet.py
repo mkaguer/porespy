@@ -40,7 +40,8 @@ def find_junctions(sk, asmask=True):
 def find_pore_bodies(im, sk, pt, dt):
     r"""
     Insert spheres at each junction point of the skeleton corresponding to
-    the local size. Additionally, distance transform is performed relative to
+    the local size. A sphere is not inserted at junctions with local size less
+    than three. Additionally, distance transform is performed relative to
     the both solid and pores, then any locations that are equal to the values
     in the original distance transform are selected to insert a new pore.
     parameters
@@ -67,6 +68,8 @@ def find_pore_bodies(im, sk, pt, dt):
     if pt.ndim == 2:
         d = np.insert(c, 2, dt[np.where(pt)].T, axis=1)
         d = np.flip(d[d[:, 2].argsort()], axis=0)
+        # delete junctions with dt < 3
+        d = np.delete(d, np.where(d[:, 2] < 3), axis=0)
         # place n where there is a pore in the empty image Ps
         for n, (i, j, k) in enumerate(d):
             if Ps[i, j] == 0:
@@ -76,6 +79,8 @@ def find_pore_bodies(im, sk, pt, dt):
     else:
         d = np.insert(c, 3, dt[np.where(pt)].T, axis=1)
         d = np.flip(d[d[:, 3].argsort()], axis=0)
+        # delete junctions with dt < 3
+        d = np.delete(d, np.where(d[:, 3] < 3), axis=0)
         for n, (i, j, k, l) in enumerate(d):
             if Ps[i, j, k] == 0:
                 insert_sphere(im=Ps, c=np.hstack((i, j, k)), r=dt[i, j, k]/1., v=n+1,
