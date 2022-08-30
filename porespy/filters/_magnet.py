@@ -99,6 +99,9 @@ def find_pore_bodies(im, sk, pt, dt):
     if mx.ndim == 2:
         d = np.insert(c, 2, dt[np.where(mx)].T, axis=1)
         d = np.flip(d[d[:, 2].argsort()], axis=0)
+        # delete junctions with dt < 3
+        d = np.delete(d, np.where(d[:, 2] < 3), axis=0)
+        print(d)
         for n, (i, j, k) in enumerate(d):
             if Ps2[i, j] == 0:
                 ss = n + Ps1_number + 1
@@ -107,6 +110,8 @@ def find_pore_bodies(im, sk, pt, dt):
     else:
         d = np.insert(c, 3, dt[np.where(mx)].T, axis=1)
         d = np.flip(d[d[:, 3].argsort()], axis=0)
+        # delete junctions with dt < 3
+        d = np.delete(d, np.where(d[:, 3] < 3), axis=0)
         for n, (i, j, k, l) in enumerate(d):
             ss = n + Ps1_number + 1
             insert_sphere(im=Ps2, c=np.hstack((i, j, k)), r=dt[i, j, k]/1.,
