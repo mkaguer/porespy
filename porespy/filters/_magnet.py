@@ -101,7 +101,6 @@ def find_pore_bodies(im, sk, pt, dt):
         d = np.flip(d[d[:, 2].argsort()], axis=0)
         # delete junctions with dt < 3
         d = np.delete(d, np.where(d[:, 2] < 3), axis=0)
-        print(d)
         for n, (i, j, k) in enumerate(d):
             if Ps2[i, j] == 0:
                 ss = n + Ps1_number + 1
