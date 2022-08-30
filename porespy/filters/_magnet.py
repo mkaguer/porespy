@@ -86,16 +86,15 @@ def find_pore_bodies(im, sk, pt, dt):
                 insert_sphere(im=Ps, c=np.hstack((i, j, k)), r=dt[i, j, k]/1., v=n+1,
                               overwrite=True)
         b = cube(7)
-    Ps1_number = n
-    # distance transform of remaining pore space
-    dt2 = edt(im * ~(Ps > 0))
-    dt3 = spim.gaussian_filter(dt2, sigma=0.5)
-    # finds throats that are too long
-    temp = (dt2 == dt) * sk
-    temp = temp * (dt > 3)  # remove short throats
-    mx = (spim.maximum_filter(temp * dt3, footprint=b) == dt3) * (~(Ps > 0)) * sk
+    # Find maximums on long throats
+    temp = Ps * np.inf
+    mask = np.isnan(temp)
+    temp[mask] = 0
+    temp = temp + dt * sk
+    mx = (spim.maximum_filter(temp, footprint=b) == dt) * (~(Ps > 0)) * sk
     # insert spheres along long throats
     c = np.vstack(np.where(mx)).T
+    Ps1_number = n
     Ps2 = Ps.copy()
     if mx.ndim == 2:
         d = np.insert(c, 2, dt[np.where(mx)].T, axis=1)
