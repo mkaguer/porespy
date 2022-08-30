@@ -277,7 +277,6 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
     net['pore.local_peak'] = np.copy(p_coords_dt)*voxel_size
     net['pore.global_peak'] = np.copy(p_coords_dt_global)*voxel_size
     net['pore.geometric_centroid'] = np.copy(p_coords_cm)*voxel_size
-    P12 = net['throat.conns']
     net['pore.volume'] = np.copy(p_volume)*(voxel_size**ND)
     net['pore.surface_area'] = np.copy(p_area_surf)*(voxel_size**2)
     return net
