@@ -6,7 +6,6 @@ from skimage.segmentation import find_boundaries
 from porespy import settings
 from porespy.tools import insert_sphere, make_contiguous, get_tqdm
 from porespy.tools import extend_slice, Results
-import dask
 tqdm = get_tqdm()
 
 
@@ -41,7 +40,8 @@ def find_junctions(sk, asmask=True):
 def find_pore_bodies(im, sk, pt, dt):
     r"""
     Insert spheres at each junction point of the skeleton corresponding to
-    the local size. Additionally, distance transform is performed relative to
+    the local size. A sphere is not inserted at junctions with local size less
+    than three. Additionally, distance transform is performed relative to
     the both solid and pores, then any locations that are equal to the values
     in the original distance transform are selected to insert a new pore.
     parameters
@@ -68,6 +68,8 @@ def find_pore_bodies(im, sk, pt, dt):
     if pt.ndim == 2:
         d = np.insert(c, 2, dt[np.where(pt)].T, axis=1)
         d = np.flip(d[d[:, 2].argsort()], axis=0)
+        # delete junctions with dt < 3
+        d = np.delete(d, np.where(d[:, 2] < 3), axis=0)
         # place n where there is a pore in the empty image Ps
         for n, (i, j, k) in enumerate(d):
             if Ps[i, j] == 0:
@@ -77,25 +79,28 @@ def find_pore_bodies(im, sk, pt, dt):
     else:
         d = np.insert(c, 3, dt[np.where(pt)].T, axis=1)
         d = np.flip(d[d[:, 3].argsort()], axis=0)
+        # delete junctions with dt < 3
+        d = np.delete(d, np.where(d[:, 3] < 3), axis=0)
         for n, (i, j, k, l) in enumerate(d):
             if Ps[i, j, k] == 0:
                 insert_sphere(im=Ps, c=np.hstack((i, j, k)), r=dt[i, j, k]/1., v=n+1,
                               overwrite=True)
         b = cube(7)
-    Ps1_number = n
-    # distance transform of remaining pore space
-    dt2 = edt(im * ~(Ps > 0))
-    dt3 = spim.gaussian_filter(dt2, sigma=0.5)
-    # finds throats that are too long
-    temp = (dt2 == dt) * sk
-    temp = temp * (dt > 3)  # remove short throats
-    mx = (spim.maximum_filter(temp * dt3, footprint=b) == dt3) * (~(Ps > 0)) * sk
+    # Find maximums on long throats
+    temp = Ps * np.inf
+    mask = np.isnan(temp)
+    temp[mask] = 0
+    temp = temp + dt * sk
+    mx = (spim.maximum_filter(temp, footprint=b) == dt) * (~(Ps > 0)) * sk
     # insert spheres along long throats
     c = np.vstack(np.where(mx)).T
+    Ps1_number = n
     Ps2 = Ps.copy()
     if mx.ndim == 2:
         d = np.insert(c, 2, dt[np.where(mx)].T, axis=1)
         d = np.flip(d[d[:, 2].argsort()], axis=0)
+        # delete junctions with dt < 3
+        d = np.delete(d, np.where(d[:, 2] < 3), axis=0)
         for n, (i, j, k) in enumerate(d):
             if Ps2[i, j] == 0:
                 ss = n + Ps1_number + 1
@@ -104,6 +109,8 @@ def find_pore_bodies(im, sk, pt, dt):
     else:
         d = np.insert(c, 3, dt[np.where(mx)].T, axis=1)
         d = np.flip(d[d[:, 3].argsort()], axis=0)
+        # delete junctions with dt < 3
+        d = np.delete(d, np.where(d[:, 3] < 3), axis=0)
         for n, (i, j, k, l) in enumerate(d):
             ss = n + Ps1_number + 1
             insert_sphere(im=Ps2, c=np.hstack((i, j, k)), r=dt[i, j, k]/1.,
@@ -181,8 +188,11 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
     slicess = spim.find_objects(throats)  # Nt by 2
     t_conns = np.zeros((len(slicess), 2), dtype=int)  # initialize
     t_coords = []
-    # distance transform of network space
-    dt = edt((fbd + throats > 0).astype(int))
+    phases = (fbd + throats > 0).astype(int)
+    dt = edt(phases == 1)
+    # Add distane transform for more than 2 phases
+    for i in range(2, phases.max()+1):
+        dt += edt(phases == i)
     fbd = make_contiguous(fbd)
     slices = spim.find_objects(fbd)
     # Initialize arrays
@@ -196,16 +206,18 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
     p_dia_global = np.zeros((Np, ), dtype=float)
     p_area_surf = np.zeros((Np, ), dtype=int)
     p_label = np.zeros((Np, ), dtype=int)
+    p_phase = np.zeros((Np, ), dtype=int)
     tqdm = get_tqdm()
 
-    # Parallelize throat for loop with dask
-    @dask.delayed
-    def throat_props(throat, i):
-        ss = extend_slice(slicess[throat], fbd.shape)
+    for i in range(num_throats):
+        throat_l = i
+        if slicess[throat_l] is None:
+            continue
+        ss = extend_slice(slicess[throat_l], fbd.shape)
         sub_im_p = fbd[ss]
         sub_im_l = throats[ss]
         throat_im = sub_im_l == i+1
-        # padded_mask = np.pad(throat_im, pad_width=1, mode='constant')
+        padded_mask = np.pad(throat_im, pad_width=1, mode='constant')
         if len(fbd.shape) == 3:
             structure = spim.generate_binary_structure(3, 2)
         else:
@@ -218,30 +230,17 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
         Pn_l = np.unique(im_w_throats_l)[1:] - 1
         if np.any(Pn_l):
             Pn_l = Pn_l[0:2]
-            t_conns[throat, :] = Pn_l
-        # FIXME: This might be something to refactor
+            t_conns[throat_l, :] = Pn_l
         for j in Pn_l:
             vx = np.where(im_w_throats_l == (j + 1))
             s_offset = np.array([i.start for i in ss])
             t_inds = tuple([i+j for i, j in zip(vx, s_offset)])
             temp = np.where(dt[t_inds] == np.amax(dt[t_inds]))[0][0]
-            # FIXME: t_coords is 2*Nt long b/c it has the coords of the ends
             t_coords.append(tuple([t_inds[k][temp] for k in range(im.ndim)]))
-            # fast marching method but slowish!! Take average.
-            # or dt transform multiplied by skeleton and middle value is the smallest dt value. do this!
-
-    delays = []
-    for i in range(num_throats):
-        throat_l = i
-        if slicess[throat_l] is None:
+    for i in tqdm(Ps, **settings.tqdm):
+        pore = i - 1
+        if slices[pore] is None:
             continue
-        delay = throat_props(throat_l, i)
-        delays.append(delay)
-    dask.compute(*delays)
-
-    # Parallelize pore for loop with dask
-    @dask.delayed
-    def pore_props(pore, i):
         s = extend_slice(slices[pore], fbd.shape)
         sub_im = fbd[s]
         sub_dt = dt[s]
@@ -253,22 +252,13 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
         p_coords_cm[pore, :] = spim.center_of_mass(pore_im) + s_offset
         temp = np.vstack(np.where(pore_dt == pore_dt.max()))[:, 0]
         p_coords_dt[pore, :] = temp + s_offset
+        p_phase[pore] = (phases[s]*pore_im).max()
         temp = np.vstack(np.where(sub_dt == sub_dt.max()))[:, 0]
         p_coords_dt_global[pore, :] = temp + s_offset
         p_volume[pore] = np.sum(pore_im)
         p_dia_local[pore] = 2*np.amax(pore_dt)
         p_dia_global[pore] = 2*np.amax(sub_dt)
         p_area_surf[pore] = np.sum(pore_dt == 1)
-
-    delays = []
-    for i in tqdm(Ps, **settings.tqdm):
-        pore = i - 1
-        if slices[pore] is None:
-            continue
-        delay = pore_props(pore, i)
-        delays.append(delay)
-    dask.compute(*delays)
-
     # Clean up values
     p_coords = p_coords_cm
     if im.ndim == 2:  # If 2D, add 0's in 3rd dimension
@@ -281,6 +271,7 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
     net['pore.coords'] = np.array(p_coords)*voxel_size
     net['pore.all'] = np.ones_like(net['pore.coords'][:, 0], dtype=bool)
     net['pore.region_label'] = np.array(p_label)
+    net['pore.phase'] = np.array(p_phase, dtype=int)
     V = np.copy(p_volume)*(voxel_size**ND)
     net['pore.region_volume'] = V  # This will be an area if image is 2D
     f = 3/4 if ND == 3 else 1.0
@@ -395,6 +386,20 @@ if __name__ == "__main__":
     print('MAGNET Extraction Complete')
     net_m = op.network.from_porespy(net)
 
+    # visualize MAGNET network
+    plt.figure(2)
+    fig, ax = plt.subplots(figsize=[5, 5]);
+    slice_m = im.T
+    ax.imshow(slice_m, cmap=plt.cm.bone)
+    op.visualization.plot_coordinates(ax=fig,
+                                  network=net_m,
+                                  size_by=net_m["pore.equivalent_diameter"],
+                                  color_by=net_m["pore.equivalent_diameter"],
+                                  markersize=200)
+    op.visualization.plot_connections(network=net_m, ax=fig)
+    ax.axis("off");
+    print('Visualization Complete')
+    
     # find surface pores
     op.topotools.find_surface_pores(net_m)
     surface_pores = net_m['pore.surface']
@@ -428,7 +433,7 @@ if __name__ == "__main__":
     op.topotools.trim(net_m, pores=Ps_trim, throats=Ts_trim)
     
     # visualize MAGNET network
-    plt.figure(2)
+    plt.figure(3)
     fig, ax = plt.subplots(figsize=[5, 5]);
     slice_m = im.T
     ax.imshow(slice_m, cmap=plt.cm.bone)
