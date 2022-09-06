@@ -30,14 +30,18 @@ def find_junctions(sk, asmask=True):
         a = cube(3)
     conv = spim.convolve(sk*1.0, a)
     pt = (conv >= 4)*sk
-    pt += (conv == 2)*sk
+    end_pts = (conv == 2)*sk
+    # pt += end_pts
+    pts = pt.copy()
+    pts += end_pts
+    # end_pts = reduce_peaks(end_pts) getting diff reduce_peaks
     pt = reduce_peaks(pt)
     if not asmask:
         pt = np.vstack(np.where(pt)).T
-    return pt
+    return pt, pts, end_pts
 
 
-def find_pore_bodies(im, sk, pt, dt):
+def find_pore_bodies(im, sk, pt, dt, end_pts):
     r"""
     Insert spheres at each junction point of the skeleton corresponding to
     the local size. A sphere is not inserted at junctions with local size less
@@ -64,12 +68,17 @@ def find_pore_bodies(im, sk, pt, dt):
         Inserted spheres at each junction point AND where throats were long
     """
     c = np.vstack(np.where(pt)).T
+    e = np.vstack(np.where(end_pts)).T
     Ps = np.zeros_like(pt, dtype=int)
     if pt.ndim == 2:
-        d = np.insert(c, 2, dt[np.where(pt)].T, axis=1)
+        de = np.insert(e, 2, dt[np.where(end_pts)].T, axis=1)
+        de = np.flip(de[de[:, 2].argsort()], axis=0)
+        # delete endpoints with dt < 3
+        de = np.delete(de, np.where(de[:, 2] < 3), axis=0)
+        # insert junction points
+        dc = np.insert(c, 2, dt[np.where(pt)].T, axis=1)
+        d = np.insert(de, len(de), dc, axis=0)
         d = np.flip(d[d[:, 2].argsort()], axis=0)
-        # delete junctions with dt < 3
-        d = np.delete(d, np.where(d[:, 2] < 3), axis=0)
         # place n where there is a pore in the empty image Ps
         for n, (i, j, k) in enumerate(d):
             if Ps[i, j] == 0:
@@ -92,6 +101,7 @@ def find_pore_bodies(im, sk, pt, dt):
     temp[mask] = 0
     temp = temp + dt * sk
     mx = (spim.maximum_filter(temp, footprint=b) == dt) * (~(Ps > 0)) * sk
+    mx = reduce_peaks(mx) # might be beneficial!!
     # insert spheres along long throats
     c = np.vstack(np.where(mx)).T
     Ps1_number = n
@@ -118,10 +128,10 @@ def find_pore_bodies(im, sk, pt, dt):
     fbd = Results()
     fbd.Ps = Ps
     fbd.Ps2 = Ps2
-    return fbd
+    return fbd, mx
 
 
-def find_throat_skeleton(im, sk, fbd):
+def find_throat_skeleton(im, sk, fbd, mx, dt, pts):
     r"""
     Identify throat segments corresponding to the overlapping pores by
     finding the border of each region, then finding the skeleton that
@@ -143,20 +153,27 @@ def find_throat_skeleton(im, sk, fbd):
         'throats'
         throats connecting non-overlapped pores
     """
+    # find throats (new)
+    mask = (mx * dt) >= 3
+    mx = mx * mask
+    throats = (~((pts + mx) > 0)) * sk  # remove junctions and mx from sk
+    fbd = make_contiguous(fbd)
+    fbd2 = ((pts + mx) > 0) * fbd
+    fbd2 = spim.maximum_filter(fbd2, footprint=square(3))
     # Throat segmentation
-    bd1 = find_boundaries(fbd, mode='inner')
-    bd2 = find_boundaries(fbd > 0, mode='inner')
-    temp = bd1 * sk
-    internal_throats = temp * (~bd2)
-    throats = sk * (~(fbd > 0))
-    ts = Results()
-    ts.internal_throats = internal_throats
-    ts.throats = throats
-    ts.all = internal_throats*3.0 + throats*3.0 + bd2*1.0 + bd1*1.0 + (~im)*0.5
-    return ts
+    # bd1 = find_boundaries(fbd, mode='inner')
+    # bd2 = find_boundaries(fbd > 0, mode='inner')
+    # temp = bd1 * sk
+    # internal_throats = temp * (~bd2)
+    # throats = sk * (~(fbd > 0))
+    # ts = Results()
+    # ts.internal_throats = internal_throats
+    # ts.throats = throats
+    # ts.all = internal_throats*3.0 + throats*3.0 + bd2*1.0 + bd1*1.0 + (~im)*0.5
+    return throats, fbd, fbd2
 
 
-def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
+def spheres_to_network(im, sk, fbd, fbd2, throats, voxel_size=1):
     r"""
     Analyzes an image that has been partitioned into pore regions and extracts
     the pore and throat geometry as well as network connectivity.
@@ -187,13 +204,12 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
     throats, num_throats = spim.label(throats, structure=s)
     slicess = spim.find_objects(throats)  # Nt by 2
     t_conns = np.zeros((len(slicess), 2), dtype=int)  # initialize
-    t_coords = []
     phases = (fbd + throats > 0).astype(int)
     dt = edt(phases == 1)
     # Add distane transform for more than 2 phases
     for i in range(2, phases.max()+1):
         dt += edt(phases == i)
-    fbd = make_contiguous(fbd)
+    # fbd = make_contiguous(fbd)
     slices = spim.find_objects(fbd)
     # Initialize arrays
     Ps = np.arange(1, np.amax(fbd)+1)  # check that this works!!
@@ -209,16 +225,22 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
     p_phase = np.zeros((Np, ), dtype=int)
     tqdm = get_tqdm()
 
+    # if len(fbd.shape) == 3:
+    #     s = spim.generate_binary_structure(3, 2)
+    # else:
+    #     s = spim.generate_binary_structure(2, 2)
+    # throats, num_throats = spim.label(throats, structure=s)
+    # slicess = spim.find_objects(throats)  # Nt by 2
+    # t_conns = np.zeros((len(slicess), 2), dtype=int)  # initialize
     for i in range(num_throats):
         throat_l = i
         if slicess[throat_l] is None:
             continue
-        ss = extend_slice(slicess[throat_l], fbd.shape)
-        sub_im_p = fbd[ss]
+        ss = extend_slice(slicess[throat_l], fbd2.shape)
+        sub_im_p = fbd2[ss]
         sub_im_l = throats[ss]
         throat_im = sub_im_l == i+1
-        padded_mask = np.pad(throat_im, pad_width=1, mode='constant')
-        if len(fbd.shape) == 3:
+        if len(fbd2.shape) == 3:
             structure = spim.generate_binary_structure(3, 2)
         else:
             structure = spim.generate_binary_structure(2, 2)
@@ -231,12 +253,38 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
         if np.any(Pn_l):
             Pn_l = Pn_l[0:2]
             t_conns[throat_l, :] = Pn_l
-        for j in Pn_l:
-            vx = np.where(im_w_throats_l == (j + 1))
-            s_offset = np.array([i.start for i in ss])
-            t_inds = tuple([i+j for i, j in zip(vx, s_offset)])
-            temp = np.where(dt[t_inds] == np.amax(dt[t_inds]))[0][0]
-            t_coords.append(tuple([t_inds[k][temp] for k in range(im.ndim)]))
+    # remove duplicates in t_conns
+    remove = np.where(t_conns[:, 0] == t_conns[:, 1])
+    np.delete(t_conns, remove, axis=0)
+    
+    # for i in range(num_throats):
+    #     throat_l = i
+    #     if slicess[throat_l] is None:
+    #         continue
+    #     ss = extend_slice(slicess[throat_l], fbd.shape)
+    #     sub_im_p = fbd[ss]
+    #     sub_im_l = throats[ss]
+    #     throat_im = sub_im_l == i+1
+    #     padded_mask = np.pad(throat_im, pad_width=1, mode='constant')
+    #     if len(fbd.shape) == 3:
+    #         structure = spim.generate_binary_structure(3, 2)
+    #     else:
+    #         structure = spim.generate_binary_structure(2, 2)
+    #     sub_sk = sk[ss]
+    #     im_w_throats_l = spim.binary_dilation(input=throat_im,
+    #                                           structure=structure)
+    #     im_w_throats_l = im_w_throats_l * sub_sk
+    #     im_w_throats_l = im_w_throats_l * sub_im_p
+    #     Pn_l = np.unique(im_w_throats_l)[1:] - 1
+    #     if np.any(Pn_l):
+    #         Pn_l = Pn_l[0:2]
+    #         t_conns[throat_l, :] = Pn_l
+    #     for j in Pn_l:
+    #         vx = np.where(im_w_throats_l == (j + 1))
+    #         s_offset = np.array([i.start for i in ss])
+    #         t_inds = tuple([i+j for i, j in zip(vx, s_offset)])
+    #         temp = np.where(dt[t_inds] == np.amax(dt[t_inds]))[0][0]
+    #         t_coords.append(tuple([t_inds[k][temp] for k in range(im.ndim)]))
     for i in tqdm(Ps, **settings.tqdm):
         pore = i - 1
         if slices[pore] is None:
@@ -370,17 +418,20 @@ if __name__ == "__main__":
     # create skeleton
     sk = ski.morphology.skeletonize_3d(im)/255
     # find all the junctions
-    pt = ps.filters.find_junctions(sk)
+    pt, pts, end_pts = ps.filters.find_junctions(sk)
     # distance transform
     dt = edt(im)
     # find pore bodies
-    fbd = ps.filters.find_pore_bodies(im, sk, pt, dt)
+    fbd, mx = ps.filters.find_pore_bodies(im, sk, pt, dt, end_pts)
+    # mask = Ps < 1
+    # temp = throats * mask + Ps
     # throat segmentation
-    ts = ps.filters.find_throat_skeleton(im, sk, fbd.Ps2)
+    throats, fbd, fbd2 = ps.filters.find_throat_skeleton(im, sk, fbd.Ps2, mx, dt, pts)
     # create network object
-    throats = ts.throats + ts.internal_throats
+    # throats = ts.throats + ts.internal_throats
     checkpoint_m = time.time()
-    net = ps.filters.spheres_to_network(im=im, sk=sk, fbd=fbd.Ps2, throats=throats,
+    net = ps.filters.spheres_to_network(im=im, sk=sk, fbd=fbd, fbd2=fbd2,
+                                        throats=throats,
                                         voxel_size=1)
     end_m = time.time()
     print('MAGNET Extraction Complete')
