@@ -115,7 +115,7 @@ def find_pore_bodies(im, sk, dt, pt):
         d = np.insert(c, 3, dt[np.where(mx)].T, axis=1)
         d = np.flip(d[d[:, 3].argsort()], axis=0)
         for n, (i, j, k, l) in enumerate(d):
-            if Ps[i, j] == 0:
+            if Ps[i, j, k] == 0:
                 ss = n + Ps1_number + 1
                 insert_sphere(im=Ps, c=np.hstack((i, j, k)), r=dt[i, j, k]/1.,
                               v=ss+1, overwrite=False)
@@ -123,7 +123,11 @@ def find_pore_bodies(im, sk, dt, pt):
     Ps = make_contiguous(Ps)
     # second image for finding throat connections
     Ps2 = ((pt + mx) > 0) * Ps
-    Ps2 = spim.maximum_filter(Ps2, footprint=square(4))
+    if Ps.ndim == 2:
+        f = square(4)
+    else:
+        f = cube(4)
+    Ps2 = spim.maximum_filter(Ps2, footprint=f)
     # results object
     fbd = Results()
     fbd.Ps = Ps
