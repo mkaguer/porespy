@@ -1,4 +1,5 @@
 import numpy as np
+import scipy as sp
 import scipy.ndimage as spim
 from edt import edt
 from skimage.morphology import square, cube
@@ -27,13 +28,19 @@ def find_junctions(sk):
         'juncs_r'
         A boolean array of all junctions after calling reduce_peaks()
     """
+    # kernel for convolution
     if sk.ndim == 2:
         a = square(3)
     else:
         a = cube(3)
-    conv = spim.convolve(sk*1.0, a)
-    juncs = (conv >= 4)*sk
-    end_pts = (conv == 2)*sk
+    # compute convolution directly or via fft, whichever is fastest
+    conv = sp.signal.convolve(sk*1.0, a, mode='same', method='auto')
+    conv = np.rint(conv).astype(int)  # in case of fft, accuracy is lost
+    # find junction points of skeleton
+    juncs = (conv >= 4) * sk
+    # find endpoints of skeleton
+    end_pts = (conv == 2) * sk
+    # reduce cluster of junctions to single pixel at centre
     juncs_r = reduce_peaks(juncs)
     # results object
     pt = Results()
