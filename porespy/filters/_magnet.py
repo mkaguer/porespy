@@ -322,13 +322,13 @@ if __name__ == "__main__":
     # distance transform
     dt = edt(im)
     # find pore bodies
-    fbd = ps.filters.find_pore_bodies(im, sk, dt, pt)
+    fbd = ps.filters.find_pore_bodies(sk, dt, pt)
     # throat segmentation
-    ts = ps.filters.find_throat_skeleton(im, sk, pt, fbd)
+    ts = ps.filters.find_throat_skeleton(sk, pt, fbd)
     # create network object
     checkpoint_m = time.time()
-    net = ps.filters.spheres_to_network(im=im, sk=sk, fbd=fbd,
-                                        throats=ts.throats, voxel_size=1)
+    net = ps.filters.spheres_to_network(sk, fbd, ts, voxel_size=1)
+
     end_m = time.time()
     print('MAGNET Extraction Complete')
     net_m = op.network.from_porespy(net)
