@@ -3,10 +3,8 @@ import scipy as sp
 import scipy.ndimage as spim
 from edt import edt
 from skimage.morphology import square, cube
-from porespy import settings
 from porespy.tools import insert_sphere, make_contiguous, get_tqdm
 from porespy.tools import extend_slice, Results
-tqdm = get_tqdm()
 
 
 def find_junctions(sk):
@@ -163,14 +161,12 @@ def find_throat_skeleton(sk, pt, fbd):
     return ts
 
 
-def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
+def spheres_to_network(sk, fbd, ts, voxel_size=1):
     r"""
     Analyzes an image that has been partitioned into pore regions and extracts
     the pore and throat geometry as well as network connectivity.
     parameters
     ------------
-    im : ndarray
-        The image of the pore space
     sk : ndarray
         The skeleton of an image (boolean).
     fbd: ndarray
@@ -187,33 +183,15 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
         the network topological information.  The dictionary names use the
         OpenPNM convention (i.e. 'pore.coords', 'throat.conns').
     """
-    if len(fbd.Ps.shape) == 3:
-        s = spim.generate_binary_structure(3, 2)
-    else:
-        s = spim.generate_binary_structure(2, 2)
-    throats, num_throats = spim.label(throats, structure=s)
+    # create structuring element
+    s = spim.generate_binary_structure(fbd.Ps.ndim, 2)
+    throats, num_throats = spim.label(ts.throats, structure=s)
     slicess = spim.find_objects(throats)  # Nt by 2
     t_conns = np.zeros((len(slicess), 2), dtype=int)  # initialize
-    phases = (fbd.Ps + throats > 0).astype(int)
-    dt = edt(phases == 1)
-    # Add distane transform for more than 2 phases
-    for i in range(2, phases.max()+1):
-        dt += edt(phases == i)
-    slices = spim.find_objects(fbd.Ps)
     # Initialize arrays
     Ps = np.arange(1, np.amax(fbd.Ps)+1)  # check that this works!!
     Np = np.size(Ps)
-    p_coords_cm = np.zeros((Np, fbd.Ps.ndim), dtype=float)
-    p_coords_dt = np.zeros((Np, fbd.Ps.ndim), dtype=float)
-    p_coords_dt_global = np.zeros((Np, fbd.Ps.ndim), dtype=float)
     p_volume = np.zeros((Np, ), dtype=float)
-    p_dia_local = np.zeros((Np, ), dtype=float)
-    p_dia_global = np.zeros((Np, ), dtype=float)
-    p_area_surf = np.zeros((Np, ), dtype=int)
-    p_label = np.zeros((Np, ), dtype=int)
-    p_phase = np.zeros((Np, ), dtype=int)
-    tqdm = get_tqdm()
-
     for i in range(num_throats):
         throat_l = i
         if slicess[throat_l] is None:
@@ -233,57 +211,29 @@ def spheres_to_network(im, sk, fbd, throats, voxel_size=1):
         im_w_throats_l = im_w_throats_l * sub_im_p
         Pn_l = np.unique(im_w_throats_l)[1:] - 1
         if np.any(Pn_l):
-            Pn_l = Pn_l[0:2]
+            Pn_l = Pn_l
             t_conns[throat_l, :] = Pn_l
     # remove duplicates in t_conns
     remove = np.where(t_conns[:, 0] == t_conns[:, 1])
     np.delete(t_conns, remove, axis=0)
-
-    for i in tqdm(Ps, **settings.tqdm):
-        pore = i - 1
-        if slices[pore] is None:
-            continue
-        s = extend_slice(slices[pore], fbd.Ps.shape)
-        sub_im = fbd.Ps[s]
-        sub_dt = dt[s]
-        pore_im = sub_im == i
-        padded_mask = np.pad(pore_im, pad_width=1, mode='constant')
-        pore_dt = edt(padded_mask)
-        s_offset = np.array([i.start for i in s])
-        p_label[pore] = i
-        p_coords_cm[pore, :] = spim.center_of_mass(pore_im) + s_offset
-        temp = np.vstack(np.where(pore_dt == pore_dt.max()))[:, 0]
-        p_coords_dt[pore, :] = temp + s_offset
-        p_phase[pore] = (phases[s]*pore_im).max()
-        temp = np.vstack(np.where(sub_dt == sub_dt.max()))[:, 0]
-        p_coords_dt_global[pore, :] = temp + s_offset
-        p_volume[pore] = np.sum(pore_im)
-        p_dia_local[pore] = 2*np.amax(pore_dt)
-        p_dia_global[pore] = 2*np.amax(sub_dt)
-        p_area_surf[pore] = np.sum(pore_dt == 1)
-    # Clean up values
-    p_coords = p_coords_cm
-    if im.ndim == 2:  # If 2D, add 0's in 3rd dimension
-        p_coords = np.vstack((p_coords_cm.T, np.zeros((Np, )))).T
+    # pore volume
+    _, counts = np.unique(fbd.Ps, return_counts=True)
+    p_volume = counts[1:]
+    # pore coords
+    p_coords = fbd.p_coords
+    if fbd.Ps.ndim == 2:  # If 2D, add 0's in 3rd dimension
+        p_coords = np.vstack((p_coords.T, np.zeros((Np, )))).T
     # create network dictionary
     net = {}
-    ND = im.ndim
-    # Define all the fundamental stuff
-    net['throat.conns'] = np.array(t_conns)
-    net['pore.coords'] = np.array(p_coords)*voxel_size
-    net['pore.all'] = np.ones_like(net['pore.coords'][:, 0], dtype=bool)
-    net['pore.region_label'] = np.array(p_label)
-    net['pore.phase'] = np.array(p_phase, dtype=int)
+    ND = fbd.Ps.ndim
+    # Define all the fundamentals for a pore network
+    net['throat.conns'] = t_conns
+    net['pore.coords'] = p_coords * voxel_size
+    # Define geometric information
     V = np.copy(p_volume)*(voxel_size**ND)
-    net['pore.region_volume'] = V  # This will be an area if image is 2D
+    net['pore.volume'] = V
     f = 3/4 if ND == 3 else 1.0
     net['pore.equivalent_diameter'] = 2*(V/np.pi * f)**(1/ND)
-    # Extract the geometric stuff
-    net['pore.local_peak'] = np.copy(p_coords_dt)*voxel_size
-    net['pore.global_peak'] = np.copy(p_coords_dt_global)*voxel_size
-    net['pore.geometric_centroid'] = np.copy(p_coords_cm)*voxel_size
-    net['pore.volume'] = np.copy(p_volume)*(voxel_size**ND)
-    net['pore.surface_area'] = np.copy(p_area_surf)*(voxel_size**2)
     return net
 
 
