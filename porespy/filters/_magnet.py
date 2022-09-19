@@ -50,7 +50,7 @@ def find_junctions(sk):
     return pt
 
 
-def find_pore_bodies(im, sk, dt, pt):
+def find_pore_bodies(sk, dt, pt):
     r"""
     Insert spheres at each junction point of the skeleton corresponding to
     the local size. A search for local maximums is performed along throats
@@ -58,8 +58,6 @@ def find_pore_bodies(im, sk, dt, pt):
     maximums are found.
     parameters
     ------------
-    im : ndarray
-        The image of the pore space
     sk : ndarray
         The skeleton of an image (boolean).
     dt : ndarray
@@ -74,34 +72,33 @@ def find_pore_bodies(im, sk, dt, pt):
         Inserted spheres corresponding to the local size
         'Ps2'
         Inserted spheres of uniform 'small' size (4 pixels)
+        'mx'
+        Maximum points along long throats where additional pores are inserted
+        'p_coords'
+        The coordinates where each sphere is added
     """
     mask = (pt.endpts * dt) >= 3  # remove endpoints with dt < 3
     pt = pt.juncs_r + pt.endpts * mask
     c = np.vstack(np.where(pt)).T
     Ps = np.zeros_like(pt, dtype=int)
-    if pt.ndim == 2:
-        d = np.insert(c, 2, dt[np.where(pt)].T, axis=1)
-        d = np.flip(d[dt[np.where(pt)].T.argsort()], axis=0)
-        # place n where there is a pore in the empty image Ps
-        for n, (i, j, k) in enumerate(d):
-            if Ps[i, j] == 0:
-                insert_sphere(im=Ps, c=np.hstack((i, j)), r=dt[i, j]/1., v=n+1,
-                              overwrite=True)
-        b = square(7)
-    else:
-        d = np.insert(c, 3, dt[np.where(pt)].T, axis=1)
-        d = np.flip(d[dt[np.where(pt)].T.argsort()], axis=0)
-        # place n where there is a pore in the empty image Ps
-        for n, (i, j, k, l) in enumerate(d):
-            if Ps[i, j, k] == 0:
-                insert_sphere(im=Ps, c=np.hstack((i, j, k)), r=dt[i, j, k]/1., v=n+1,
-                              overwrite=True)
-        b = cube(7)
+    # initialize p_coords
+    p_coords = []
+    # insert spheres at junctions and endpoints
+    d = np.insert(c, pt.ndim, dt[np.where(pt)].T, axis=1)
+    d = np.flip(d[dt[np.where(pt)].T.argsort()], axis=0)
+    # place n where there is a pore in the empty image Ps
+    for n, row in enumerate(d):
+        coords = tuple(row[0:pt.ndim])
+        if Ps[coords] == 0:
+            p_coords.append(coords)  # best to record p_coords here
+            insert_sphere(im=Ps, c=np.hstack(coords), r=dt[coords]/1., v=n+1,
+                          overwrite=True)
     # Find maximums on long throats
     temp = Ps * np.inf
     mask = np.isnan(temp)
     temp[mask] = 0
     temp = temp + dt * sk
+    b = square(7) if pt.ndim == 2 else cube(7)
     mx = (spim.maximum_filter(temp, footprint=b) == dt) * (~(Ps > 0)) * sk
     mx = reduce_peaks(mx)
     # remove mx with dt < 3
@@ -110,40 +107,32 @@ def find_pore_bodies(im, sk, dt, pt):
     # insert spheres along long throats
     c = np.vstack(np.where(mx)).T
     Ps1_number = n
-    if mx.ndim == 2:
-        d = np.insert(c, 2, dt[np.where(mx)].T, axis=1)
-        d = np.flip(d[d[:, 2].argsort()], axis=0)
-        for n, (i, j, k) in enumerate(d):
-            if Ps[i, j] == 0:
-                ss = n + Ps1_number + 1
-                insert_sphere(im=Ps, c=np.hstack((i, j)), r=dt[i, j]/1.,
-                              v=ss+1, overwrite=False)
-    else:
-        d = np.insert(c, 3, dt[np.where(mx)].T, axis=1)
-        d = np.flip(d[d[:, 3].argsort()], axis=0)
-        for n, (i, j, k, l) in enumerate(d):
-            if Ps[i, j, k] == 0:
-                ss = n + Ps1_number + 1
-                insert_sphere(im=Ps, c=np.hstack((i, j, k)), r=dt[i, j, k]/1.,
-                              v=ss+1, overwrite=False)
+    # insert spheres at local maximums
+    d = np.insert(c, mx.ndim, dt[np.where(mx)].T, axis=1)
+    d = np.flip(d[d[:, mx.ndim].argsort()], axis=0)
+    for n, row in enumerate(d):
+        coords = tuple(row[0:mx.ndim])
+        if Ps[coords] == 0:
+            p_coords.append(coords)  # continue to record p_coords
+            ss = n + Ps1_number + 1
+            insert_sphere(im=Ps, c=np.hstack(coords), r=dt[coords]/1.,
+                          v=ss+1, overwrite=False)
     # make pore numbers sequential
     Ps = make_contiguous(Ps)
     # second image for finding throat connections
     Ps2 = ((pt + mx) > 0) * Ps
-    if Ps.ndim == 2:
-        f = square(4)
-    else:
-        f = cube(4)
+    f = square(4) if Ps.ndim == 2 else cube(4)
     Ps2 = spim.maximum_filter(Ps2, footprint=f)
     # results object
     fbd = Results()
     fbd.Ps = Ps
     fbd.Ps2 = Ps2
     fbd.mx = mx
+    fbd.p_coords = np.array(p_coords)
     return fbd
 
 
-def find_throat_skeleton(im, sk, pt, fbd):
+def find_throat_skeleton(sk, pt, fbd):
     r"""
     Identify throat segments corresponding to the overlapping pores by
     finding the border of each region, then finding the skeleton that
