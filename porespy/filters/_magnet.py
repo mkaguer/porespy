@@ -211,7 +211,7 @@ def spheres_to_network(sk, fbd, ts, voxel_size=1):
         im_w_throats_l = im_w_throats_l * sub_im_p
         Pn_l = np.unique(im_w_throats_l)[1:] - 1
         if np.any(Pn_l):
-            Pn_l = Pn_l
+            Pn_l = Pn_l[0:2]
             t_conns[throat_l, :] = Pn_l
     # remove duplicates in t_conns
     remove = np.where(t_conns[:, 0] == t_conns[:, 1])
