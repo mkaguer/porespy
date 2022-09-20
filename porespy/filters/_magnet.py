@@ -74,6 +74,8 @@ def find_pore_bodies(sk, dt, pt):
         Maximum points along long throats where additional pores are inserted
         'p_coords'
         The coordinates where each sphere is added
+        'p_radius'
+        The radius of each sphere added
     """
     mask = (pt.endpts * dt) >= 3  # remove endpoints with dt < 3
     pt = pt.juncs_r + pt.endpts * mask
@@ -81,6 +83,7 @@ def find_pore_bodies(sk, dt, pt):
     Ps = np.zeros_like(pt, dtype=int)
     # initialize p_coords
     p_coords = []
+    p_radius = []
     # insert spheres at junctions and endpoints
     d = np.insert(c, pt.ndim, dt[np.where(pt)].T, axis=1)
     d = np.flip(d[dt[np.where(pt)].T.argsort()], axis=0)
@@ -89,7 +92,8 @@ def find_pore_bodies(sk, dt, pt):
         coords = tuple(row[0:pt.ndim])
         if Ps[coords] == 0:
             p_coords.append(coords)  # best to record p_coords here
-            insert_sphere(im=Ps, c=np.hstack(coords), r=dt[coords]/1., v=n+1,
+            p_radius.append(dt[coords])  # and p_radius here
+            insert_sphere(im=Ps, c=np.hstack(coords), r=dt[coords], v=n+1,
                           overwrite=True)
     # Find maximums on long throats
     temp = Ps * np.inf
@@ -112,8 +116,9 @@ def find_pore_bodies(sk, dt, pt):
         coords = tuple(row[0:mx.ndim])
         if Ps[coords] == 0:
             p_coords.append(coords)  # continue to record p_coords
+            p_radius.append(dt[coords])  # and p_radius here
             ss = n + Ps1_number + 1
-            insert_sphere(im=Ps, c=np.hstack(coords), r=dt[coords]/1.,
+            insert_sphere(im=Ps, c=np.hstack(coords), r=dt[coords],
                           v=ss+1, overwrite=False)
     # make pore numbers sequential
     Ps = make_contiguous(Ps)
@@ -127,6 +132,7 @@ def find_pore_bodies(sk, dt, pt):
     fbd.Ps2 = Ps2
     fbd.mx = mx
     fbd.p_coords = np.array(p_coords)
+    fbd.p_radius = np.array(p_radius)
     return fbd
 
 
@@ -191,7 +197,6 @@ def spheres_to_network(sk, fbd, ts, voxel_size=1):
     # Initialize arrays
     Ps = np.arange(1, np.amax(fbd.Ps)+1)  # check that this works!!
     Np = np.size(Ps)
-    p_volume = np.zeros((Np, ), dtype=float)
     for i in range(num_throats):
         throat_l = i
         if slicess[throat_l] is None:
@@ -216,24 +221,18 @@ def spheres_to_network(sk, fbd, ts, voxel_size=1):
     # remove duplicates in t_conns
     remove = np.where(t_conns[:, 0] == t_conns[:, 1])
     np.delete(t_conns, remove, axis=0)
-    # pore volume
-    _, counts = np.unique(fbd.Ps, return_counts=True)
-    p_volume = counts[1:]
     # pore coords
     p_coords = fbd.p_coords
     if fbd.Ps.ndim == 2:  # If 2D, add 0's in 3rd dimension
         p_coords = np.vstack((p_coords.T, np.zeros((Np, )))).T
     # create network dictionary
     net = {}
-    ND = fbd.Ps.ndim
     # Define all the fundamentals for a pore network
     net['throat.conns'] = t_conns
     net['pore.coords'] = p_coords * voxel_size
     # Define geometric information
-    V = np.copy(p_volume)*(voxel_size**ND)
-    net['pore.volume'] = V
-    f = 3/4 if ND == 3 else 1.0
-    net['pore.equivalent_diameter'] = 2*(V/np.pi * f)**(1/ND)
+    # add radius
+    net['pore.radius'] = fbd.p_radius * voxel_size
     return net
 
 
@@ -332,6 +331,7 @@ if __name__ == "__main__":
     end_m = time.time()
     print('MAGNET Extraction Complete')
     net_m = op.network.from_porespy(net)
+    net_m['pore.diameter'] = net_m['pore.radius'] * 2
 
     # visualize MAGNET network
     plt.figure(2)
@@ -340,8 +340,8 @@ if __name__ == "__main__":
     ax.imshow(slice_m, cmap=plt.cm.bone)
     op.visualization.plot_coordinates(ax=fig,
                                       network=net_m,
-                                      size_by=net_m["pore.equivalent_diameter"],
-                                      color_by=net_m["pore.equivalent_diameter"],
+                                      size_by=net_m["pore.diameter"],
+                                      color_by=net_m["pore.diameter"],
                                       markersize=200)
     op.visualization.plot_connections(network=net_m, ax=fig)
     ax.axis("off");
@@ -386,7 +386,7 @@ if __name__ == "__main__":
     ax.imshow(slice_m, cmap=plt.cm.bone)
     op.visualization.plot_coordinates(ax=fig,
                                       network=net_m,
-                                      size_by=net_m["pore.equivalent_diameter"],
+                                      size_by=net_m["pore.diameter"],
                                       color_by=net_m["pore.left"],
                                       markersize=200)
     op.visualization.plot_connections(network=net_m, ax=fig)
@@ -398,7 +398,7 @@ if __name__ == "__main__":
     geo = op.models.collections.geometry.spheres_and_cylinders
     del geo['pore.diameter'], geo['pore.volume']
     # set pore.diameter
-    net_m['pore.diameter'] = net_m['pore.equivalent_diameter'].copy()
+    net_m['pore.diameter'] = net_m['pore.diameter'].copy()
     # add geometry models to network
     net_m.add_model_collection(geo)
     net_m.regenerate_models()
