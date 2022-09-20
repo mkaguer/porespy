@@ -3,7 +3,7 @@ import scipy as sp
 import scipy.ndimage as spim
 from edt import edt
 from skimage.morphology import square, cube
-from porespy.tools import insert_sphere, make_contiguous, get_tqdm
+from porespy.tools import insert_sphere, make_contiguous
 from porespy.tools import extend_slice, Results
 
 
