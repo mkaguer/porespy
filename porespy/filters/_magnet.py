@@ -3,7 +3,7 @@ import scipy as sp
 import scipy.ndimage as spim
 from edt import edt
 from skimage.morphology import square, cube
-from porespy.tools import insert_sphere, make_contiguous
+from porespy.tools import _insert_disk_at_points, make_contiguous
 from porespy.tools import extend_slice, Results
 
 
@@ -93,8 +93,11 @@ def find_pore_bodies(sk, dt, pt):
         if Ps[coords] == 0:
             p_coords.append(coords)  # best to record p_coords here
             p_radius.append(dt[coords])  # and p_radius here
-            insert_sphere(im=Ps, c=np.hstack(coords), r=dt[coords], v=n+1,
-                          overwrite=True)
+            _insert_disk_at_points(im=Ps,
+                                   coords=np.hstack(coords).reshape((2, 1)),
+                                   r=round(dt[coords]),
+                                   v=n+1,
+                                   overwrite=True)
     # Find maximums on long throats
     temp = Ps * np.inf
     mask = np.isnan(temp)
@@ -118,8 +121,11 @@ def find_pore_bodies(sk, dt, pt):
             p_coords.append(coords)  # continue to record p_coords
             p_radius.append(dt[coords])  # and p_radius here
             ss = n + Ps1_number + 1
-            insert_sphere(im=Ps, c=np.hstack(coords), r=dt[coords],
-                          v=ss+1, overwrite=False)
+            _insert_disk_at_points(im=Ps,
+                                   coords=np.hstack(coords).reshape((2, 1)),
+                                   r=round(dt[coords]),
+                                   v=ss+1,
+                                   overwrite=False)
     # make pore numbers sequential
     Ps = make_contiguous(Ps)
     # second image for finding throat connections
