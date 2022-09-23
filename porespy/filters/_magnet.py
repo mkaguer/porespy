@@ -84,17 +84,19 @@ def find_pore_bodies(sk, dt, pt):
     # initialize p_coords
     p_coords = []
     p_radius = []
+    # Find number of dimensions
+    ND = pt.ndim
     # insert spheres at junctions and endpoints
-    d = np.insert(c, pt.ndim, dt[np.where(pt)].T, axis=1)
+    d = np.insert(c, ND, dt[np.where(pt)].T, axis=1)
     d = np.flip(d[dt[np.where(pt)].T.argsort()], axis=0)
     # place n where there is a pore in the empty image Ps
     for n, row in enumerate(d):
-        coords = tuple(row[0:pt.ndim])
+        coords = tuple(row[0:ND])
         if Ps[coords] == 0:
             p_coords.append(coords)  # best to record p_coords here
             p_radius.append(dt[coords])  # and p_radius here
             _insert_disk_at_points(im=Ps,
-                                   coords=np.hstack(coords).reshape((2, 1)),
+                                   coords=np.hstack(coords).reshape((ND, 1)),
                                    r=round(dt[coords]),
                                    v=n+1,
                                    overwrite=True)
@@ -103,7 +105,7 @@ def find_pore_bodies(sk, dt, pt):
     mask = np.isnan(temp)
     temp[mask] = 0
     temp = temp + dt * sk
-    b = square(7) if pt.ndim == 2 else cube(7)
+    b = square(7) if ND == 2 else cube(7)
     mx = (spim.maximum_filter(temp, footprint=b) == dt) * (~(Ps > 0)) * sk
     mx = reduce_peaks(mx)
     # remove mx with dt < 3
@@ -113,16 +115,16 @@ def find_pore_bodies(sk, dt, pt):
     c = np.vstack(np.where(mx)).T
     Ps1_number = n
     # insert spheres at local maximums
-    d = np.insert(c, mx.ndim, dt[np.where(mx)].T, axis=1)
-    d = np.flip(d[d[:, mx.ndim].argsort()], axis=0)
+    d = np.insert(c, ND, dt[np.where(mx)].T, axis=1)
+    d = np.flip(d[d[:, ND].argsort()], axis=0)
     for n, row in enumerate(d):
-        coords = tuple(row[0:mx.ndim])
+        coords = tuple(row[0:ND])
         if Ps[coords] == 0:
             p_coords.append(coords)  # continue to record p_coords
             p_radius.append(dt[coords])  # and p_radius here
             ss = n + Ps1_number + 1
             _insert_disk_at_points(im=Ps,
-                                   coords=np.hstack(coords).reshape((2, 1)),
+                                   coords=np.hstack(coords).reshape((ND, 1)),
                                    r=round(dt[coords]),
                                    v=ss+1,
                                    overwrite=False)
@@ -130,7 +132,7 @@ def find_pore_bodies(sk, dt, pt):
     Ps = make_contiguous(Ps)
     # second image for finding throat connections
     Ps2 = ((pt + mx) > 0) * Ps
-    f = square(4) if Ps.ndim == 2 else cube(4)
+    f = square(4) if ND == 2 else cube(4)
     Ps2 = spim.maximum_filter(Ps2, footprint=f)
     # results object
     fbd = Results()
