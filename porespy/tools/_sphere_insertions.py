@@ -66,7 +66,7 @@ def _make_balls(r, smooth=True):  # pragma: no cover
     return balls
 
 
-@numba.jit(nopython=True, parallel=False)
+@numba.jit(nopython=True, parallel=False, cache=True)
 def _insert_disk_at_points(im, coords, r, v,
                            smooth=True, overwrite=False):  # pragma: no cover
     r"""
