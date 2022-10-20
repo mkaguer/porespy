@@ -198,7 +198,7 @@ def spheres_to_network(sk, fbd, ts, voxel_size=1):
         OpenPNM convention (i.e. 'pore.coords', 'throat.conns').
     """
     # create structuring element
-    s = spim.generate_binary_structure(fbd.Ps.ndim, 2)
+    s = spim.generate_binary_structure(fbd.Ps.ndim, fbd.Ps.ndim)
     throats, num_throats = spim.label(ts.throats, structure=s)
     slicess = spim.find_objects(throats)  # Nt by 2
     t_conns = np.zeros((len(slicess), 2), dtype=int)  # initialize
