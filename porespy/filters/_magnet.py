@@ -78,9 +78,9 @@ def find_pore_bodies(sk, dt, pt):
         The radius of each sphere added
     """
     mask = (pt.endpts * dt) >= 3  # remove endpoints with dt < 3
-    pt = pt.juncs_r + pt.endpts * mask
-    c = np.vstack(np.where(pt)).T
-    Ps = np.zeros_like(pt, dtype=int)
+    pts = pt.juncs_r + pt.endpts * mask
+    c = np.vstack(np.where(pts)).T
+    Ps = np.zeros_like(pts, dtype=int)
     # initialize p_coords
     p_coords = []
     p_radius = []
@@ -132,7 +132,7 @@ def find_pore_bodies(sk, dt, pt):
     # make pore numbers sequential
     Ps = make_contiguous(Ps)
     # second image for finding throat connections
-    Ps2 = ((pt + mx) > 0) * Ps
+    Ps2 = ((pts + mx) > 0) * Ps
     f = square(4) if ND == 2 else cube(4)
     Ps2 = spim.maximum_filter(Ps2, footprint=f)
     # results object
