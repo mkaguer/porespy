@@ -107,7 +107,7 @@ def find_pore_bodies(sk, dt, pt):
     temp = temp + dt * sk
     b = square(7) if ND == 2 else cube(7)
     mx = (spim.maximum_filter(temp, footprint=b) == dt) * (~(Ps > 0)) * sk
-    mx = reduce_peaks(mx)
+    # mx = reduce_peaks(mx)
     # remove mx with dt < 3
     mask = (mx * dt) >= 3
     mx = mx * mask
