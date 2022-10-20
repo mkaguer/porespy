@@ -468,7 +468,6 @@ if __name__ == "__main__":
     surface_pores = net_m['pore.surface']
 
     # label left, right, back, and front pores
-    [a, b] = [30, 375]
     net_m['pore.left'] = np.zeros(net_m.Np, dtype=bool)
     net_m['pore.left'][surface_pores] = net_m['pore.coords'][surface_pores][:, 0] < a
     net_m['pore.right'] = np.zeros(net_m.Np, dtype=bool)
