@@ -228,9 +228,9 @@ def spheres_to_network(sk, fbd, ts, voxel_size=1):
             t_conns[throat_l, :] = Pn_l
     # remove duplicates in t_conns
     remove = np.where(t_conns[:, 0] == t_conns[:, 1])
-    np.delete(t_conns, remove, axis=0)
+    t_conns = np.delete(t_conns, remove, axis=0)
     # pore coords
-    p_coords = fbd.p_coords
+    p_coords = fbd.p_coords.astype('float')
     if fbd.Ps.ndim == 2:  # If 2D, add 0's in 3rd dimension
         p_coords = np.vstack((p_coords.T, np.zeros((Np, )))).T
     # create network dictionary
