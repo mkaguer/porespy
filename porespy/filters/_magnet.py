@@ -473,45 +473,44 @@ if __name__ == "__main__":
     net_m['pore.left'][surface_pores] = net_m['pore.coords'][surface_pores][:, 0] < a
     net_m['pore.right'] = np.zeros(net_m.Np, dtype=bool)
     net_m['pore.right'][surface_pores] = net_m['pore.coords'][surface_pores][:, 0] > b
+    '''
+    # add boundary pores
+    left = net_m.pores(['left', 'surface'], mode='and')
+    right = net_m.pores(['right', 'surface'], mode='and')        
+    op.topotools.add_boundary_pores(net_m,
+                                    pores=left,
+                                    move_to=[0, None, None],
+                                    apply_label='left_boundary')
+    op.topotools.add_boundary_pores(net_m,
+                                    pores=right,
+                                    move_to=[im.shape[0]*voxel_size, None, None],
+                                    apply_label='right_boundary')
 
-    # Move boundary pores to edge of domain
-    # left
-    left = net_m.pores('left')
-    temp = np.zeros(net_m.Np)
-    temp[left] = net_m['pore.coords'][:, 0][left]
-    net_m['pore.coords'][:, 0] -= temp  # don't index pore.coords
-    # right
-    right = net_m.pores('right')
-    temp = np.zeros(net_m.Np)
-    temp[right] = net_m['pore.coords'][:, 0][right] - im.shape[0]
-    net_m['pore.coords'][:, 0] -= temp  # don't index pore.coords
-
-    # network health
-    h = op.utils.check_network_health(net_m)
-    dis_pores = np.zeros(net_m.Np, dtype=bool)
-    dis_pores[h['disconnected_pores']] = True
-    net_m['pore.disconnected_pores'] = dis_pores
-    Ps_trim = h['disconnected_pores']
-    Ts_trim = np.append(h['duplicate_throats'], h['looped_throats'])
-    op.topotools.trim(net_m, pores=Ps_trim, throats=Ts_trim)
-
+    # assign parent radius to cloned pores
+    left_boundary = net_m.pores('left_boundary')
+    right_boundary = net_m.pores('right_boundary')
+    net_m['pore.radius'][left_boundary] = net_m['pore.radius'][left]
+    net_m['pore.radius'][right_boundary] = net_m['pore.radius'][right]
+    net_m['pore.diameter'] = net_m['pore.radius'] * 2
+    '''
     # visualize MAGNET network
-    plt.figure(3)
-    fig, ax = plt.subplots(figsize=[5, 5]);
-    slice_m = im.T
-    ax.imshow(slice_m, cmap=plt.cm.bone)
-    op.visualization.plot_coordinates(ax=fig,
-                                      network=net_m,
-                                      size_by=net_m["pore.diameter"],
-                                      color_by=net_m["pore.left"],
-                                      markersize=200)
-    op.visualization.plot_connections(network=net_m, ax=fig)
-    ax.axis("off");
-    print('Visualization Complete')
+    if twod:
+        plt.figure(3)
+        fig, ax = plt.subplots(figsize=[5, 5]);
+        slice_m = im.T
+        ax.imshow(slice_m, cmap=plt.cm.bone)
+        op.visualization.plot_coordinates(ax=fig,
+                                          network=net_m,
+                                          size_by=net_m["pore.diameter"],
+                                          color_by=net_m["pore.left"],
+                                          markersize=200)
+        op.visualization.plot_connections(network=net_m, ax=fig)
+        ax.axis("off");
+        print('Visualization Complete')
 
     # %% Run Stokes Flow algorithm on extracted network
     # collection of geometry models, delete pore.diameter and pore.volume models
-    geo = op.models.collections.geometry.spheres_and_cylinders
+    geo = op.models.collections.geometry.cones_and_cylinders
     del geo['pore.diameter'], geo['pore.volume']
     # set pore.diameter
     net_m['pore.diameter'] = net_m['pore.diameter'].copy()
