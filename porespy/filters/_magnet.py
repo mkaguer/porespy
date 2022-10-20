@@ -384,18 +384,39 @@ if __name__ == "__main__":
     ps.visualization.set_mpl_style()
     np.random.seed(10)
 
+    twod = False
+
     # %% Generate a test image
-    im = ps.generators.blobs(shape=[400, 400], porosity=0.7, blobiness=2)
-    plt.figure(1)
-    plt.imshow(np.flip(im.T, axis=0))
-    plt.axis('off')
-    # Parameters
-    mu = 1  # Pa s
-    Pin = 1  # 10kPa/m
-    Pout = 0
-    Delta_P = Pin - Pout
-    A = 1e-2
-    L = 1e-5
+    if twod:
+        im = ps.generators.blobs(shape=[400, 400], porosity=0.7, blobiness=2)
+        plt.figure(1)
+        plt.imshow(np.flip(im.T, axis=0))
+        plt.axis('off')
+        # Parameters
+        mu = 1  # Pa s
+        Pin = 1  # 10kPa/m
+        Pout = 0
+        Delta_P = Pin - Pout
+        A = 1e-2
+        L = 1e-5
+        [a, b] = [30, 375]
+        voxel_size = 1
+
+    if not twod:
+        im = ps.generators.blobs(shape=[256, 256, 256], porosity=0.7, blobiness=2)
+        # trim floating solid
+        im = ps.filters.trim_floating_solid(im, conn=6)
+        # Parameters
+        x, y, z = 2.25e-6, 2.25e-6, 2.25e-6
+        mu = 1e-3  # Pa s
+        Pin = 22.5  # 10kPa/m
+        Pout = 0
+        Delta_P = Pin - Pout
+        A = (y * 1000) * (z * 1000)
+        L = x * 1000
+        voxel_size = x
+        a = x * 30
+        b = x * 225
 
     # %% MAGNET Extraction
     start_m = time.time()
