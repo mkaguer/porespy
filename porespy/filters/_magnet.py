@@ -85,10 +85,11 @@ def find_pore_bodies(sk, dt, pt):
     p_coords = []
     p_radius = []
     # Find number of dimensions
-    ND = pt.ndim
+    ND = pts.ndim
     # insert spheres at junctions and endpoints
-    d = np.insert(c, ND, dt[np.where(pt)].T, axis=1)
-    d = np.flip(d[dt[np.where(pt)].T.argsort()], axis=0)
+    d = np.insert(c, ND, dt[np.where(pts)].T, axis=1)
+    d = np.flip(d[dt[np.where(pts)].T.argsort()], axis=0)
+    d = np.delete(d, np.where(d[:, ND] == 0), axis=0)  # FIXME: temporary fix
     # place n where there is a pore in the empty image Ps
     for n, row in enumerate(d):
         coords = tuple(row[0:ND])
