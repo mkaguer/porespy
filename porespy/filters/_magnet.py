@@ -432,26 +432,36 @@ if __name__ == "__main__":
     ts = ps.filters.find_throat_skeleton(sk, pt, fbd)
     # create network object
     checkpoint_m = time.time()
-    net = ps.filters.spheres_to_network(sk, fbd, ts, voxel_size=1)
-
+    net = ps.filters.spheres_to_network(sk, fbd, ts, voxel_size=voxel_size)
     end_m = time.time()
     print('MAGNET Extraction Complete')
-    net_m = op.network.from_porespy(net)
-    net_m['pore.diameter'] = net_m['pore.radius'] * 2
+    net_m = op.io.network_from_porespy(net)
+    # net_m.models.clear()
+    net_m['pore.diameter'] = net_m['pore.radius'] * 2   
+    
+    # network health
+    h = op.utils.check_network_health(net_m)
+    dis_pores = np.zeros(net_m.Np, dtype=bool)
+    dis_pores[h['disconnected_pores']] = True
+    net_m['pore.disconnected_pores'] = dis_pores
+    Ps_trim = h['disconnected_pores']
+    Ts_trim = np.append(h['duplicate_throats'], h['looped_throats'])
+    op.topotools.trim(net_m, pores=Ps_trim, throats=Ts_trim)
 
     # visualize MAGNET network
-    plt.figure(2)
-    fig, ax = plt.subplots(figsize=[5, 5]);
-    slice_m = im.T
-    ax.imshow(slice_m, cmap=plt.cm.bone)
-    op.visualization.plot_coordinates(ax=fig,
-                                      network=net_m,
-                                      size_by=net_m["pore.diameter"],
-                                      color_by=net_m["pore.diameter"],
-                                      markersize=200)
-    op.visualization.plot_connections(network=net_m, ax=fig)
-    ax.axis("off");
-    print('Visualization Complete')
+    if twod:
+        plt.figure(2)
+        fig, ax = plt.subplots(figsize=[5, 5]);
+        slice_m = im.T
+        ax.imshow(slice_m, cmap=plt.cm.bone)
+        op.visualization.plot_coordinates(ax=fig,
+                                          network=net_m,
+                                          size_by=net_m["pore.diameter"],
+                                          color_by=net_m["pore.diameter"],
+                                          markersize=200)
+        op.visualization.plot_connections(network=net_m, ax=fig)
+        ax.axis("off");
+        print('Visualization Complete')
 
     # find surface pores
     op.topotools.find_surface_pores(net_m)
