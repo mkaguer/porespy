@@ -516,7 +516,14 @@ if __name__ == "__main__":
     # add geometry models to network
     net_m.add_model_collection(geo)
     net_m.regenerate_models()
-
+    
+    # throat diameter of boundary pores
+    # left_throats = net_m.find_neighbor_throats(left_boundary)
+    # net_m['throat.diameter'][left_throats] = net_m['pore.diameter'][left_boundary]
+    # right_throats = net_m.find_neighbor_throats(right_boundary)
+    # net_m['throat.diameter'][right_throats] = net_m['pore.diameter'][right_boundary]
+    # net_m.regenerate_models(exclude=['throat.diameter'])
+    
     # phase
     phase_m = op.phase.Phase(network=net_m)
     phase_m['pore.viscosity'] = mu
