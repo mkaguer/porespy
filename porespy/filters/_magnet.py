@@ -5,6 +5,11 @@ from edt import edt
 from skimage.morphology import square, cube
 from porespy.tools import _insert_disk_at_points, make_contiguous
 from porespy.tools import extend_slice, Results
+import time
+import dask.array as da
+from skimage.morphology import skeletonize_3d
+from porespy import settings
+from porespy.filters._snows import _estimate_overlap
 
 
 def find_junctions(sk):
@@ -290,13 +295,84 @@ def reduce_peaks(peaks):
     return peaks_new
 
 
+def skeleton_parallel(im, overlap=None, cores=None):
+    r"""
+    Performs `skimage.morphology.skeleton_3d` in parallel using dask
+
+    Parameters
+    ----------
+    im : ndarray
+        A binary image of porous media with 'True' values indicating
+        phase of interest.
+    overlap : float (optional)
+        The amount of overlap to apply between chunks.  If not provided it
+        will be estiamted using ``porespy.tools.estimate_overlap`` with
+        ``mode='dt'``.
+    cores : int or None
+        Number of cores that will be used to parallel process all domains.
+        If ``None`` then all cores will be used but user can specify any
+        integer values to control the memory usage.  Setting value to 1
+        will effectively process the chunks in serial to minimize memory
+        usage.
+
+    Returns
+    -------
+    sk : ndarray
+        Skeleton of image
+
+    """
+    if overlap is None:
+        overlap = _estimate_overlap(im, mode='dt') # FIXME: perform dt once!
+    if cores is None:
+        cores = settings.ncores
+    divs = cores
+    overlap = _estimate_overlap(im, mode='dt')
+    depth = {}
+    for i in range(im.ndim):
+        depth[i] = np.round(overlap).astype(int)
+    chunk_shape = (np.array(im.shape) / np.array(divs)).astype(int)
+    skel = da.from_array(im, chunks=chunk_shape)
+    skel = da.overlap.overlap(skel, depth=depth, boundary='none')
+    skel = skel.map_blocks(skeletonize_3d)
+    skel = da.overlap.trim_internal(skel, depth, boundary='none')
+    skel = skel.compute(num_workers=cores).astype(bool)
+    return skel
+
+
 if __name__ == "__main__":
-
     '''
-
+    import porespy as ps
+    import matplotlib.pyplot as plt
+    import time
+    np.random.seed(10)
+    im = ps.generators.blobs([128, 128, 128], blobiness=0.7, porosity=0.65)
+    im = ps.filters.trim_floating_solid(im)
+    # perform skeleton_3d
+    t0 = time.time()
+    sk = skeletonize_3d(im).astype(bool)
+    print(f"Elapsed time (skimage): {time.time() - t0:.2f} s")
+    # perform skeleton_3d in parallel
+    t0 = time.time()
+    sk_p = skeleton_parallel(im)
+    print(f"Elapsed time (parallel): {time.time() - t0:.2f} s")
+    # plot
+    fig, ax = plt.subplots(ncols=2, figsize=(8, 4))
+    if im.ndim == 3:
+        ax[0].imshow(sk[:, :, 50], origin="lower")
+        ax[1].imshow(sk_p[:, :, 50], origin="lower")
+    else:
+        ax[0].imshow(sk, origin="lower")
+        ax[1].imshow(sk_p, origin="lower")
+    N_ones = sk.sum()
+    N_ones_not_matched = (sk != sk_p).sum()
+    accuracy = (1 - N_ones_not_matched / N_ones)
+    print(f"Accuracy: {accuracy*100:.9f} %")
+    '''
+    '''
     Simulation using MAGNET extraction
 
     '''
+    
 
     # import packages
     import porespy as ps
