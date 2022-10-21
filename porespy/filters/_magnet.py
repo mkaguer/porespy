@@ -12,6 +12,41 @@ from porespy import settings
 from porespy.filters._snows import _estimate_overlap
 
 
+def magnet(im, sk=None, voxel_size=1, l_max=7):
+    r"""
+    find all the junctions in the skelton. It uses convolution to find voxels
+    with extra neighbors, as well as terminal points on the ends of branches.
+    parameters
+    ------------
+    im : ndarray
+        An image of the porous material of interest
+    sk : ndarray
+        The skeleton of an image (boolean).
+    voxel_size : scalar (default = 1)
+        The resolution of the image, expressed as the length of one side of a
+        voxel, so the volume of a voxel would be voxel_size-cubed
+    Returns
+    -------
+    net : dict
+        A dictionary containing all the pore and throat size data, as well as
+        the network topological information.  The dictionary names use the
+        OpenPNM convention (i.e. 'pore.coords', 'throat.conns').
+    """
+    if sk is None:
+        sk = ski.morphology.skeletonize_3d(im)/255
+    # find junction points
+    pt = ps.filters.find_junctions(sk)
+    # distance transform
+    dt = edt(im)
+    # insert pores at junction points
+    fbd = ps.filters.find_pore_bodies(sk, dt, pt, l_max)
+    # find throat skeleton
+    ts = ps.filters.find_throat_skeleton(sk, pt, fbd)
+    # convert spheres to network dictionary
+    net = ps.filters.spheres_to_network(sk, fbd, ts, voxel_size=voxel_size)
+    return net
+    
+
 def find_junctions(sk):
     r"""
     find all the junctions in the skelton. It uses convolution to find voxels
