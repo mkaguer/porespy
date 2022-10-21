@@ -88,7 +88,7 @@ def find_junctions(sk):
     return pt
 
 
-def find_pore_bodies(sk, dt, pt):
+def find_pore_bodies(sk, dt, pt, l_max=7):
     r"""
     Insert spheres at each junction point of the skeleton corresponding to
     the local size. A search for local maximums is performed along throats
@@ -102,6 +102,9 @@ def find_pore_bodies(sk, dt, pt):
         The distance transform of the phase of interest.
     pt : Results object
         A custom object returned from find_junctions()
+    l_max: int
+        The length of the cubical structuring element to use in the maximum
+        filter for inserting pores along long throats
     Returns
     -------
     fbd : Results object
@@ -146,7 +149,7 @@ def find_pore_bodies(sk, dt, pt):
     mask = np.isnan(temp)
     temp[mask] = 0
     temp = temp + dt * sk
-    b = square(7) if ND == 2 else cube(7)
+    b = square(l_max) if ND == 2 else cube(l_max)
     mx = (spim.maximum_filter(temp, footprint=b) == dt) * (~(Ps > 0)) * sk
     # mx = reduce_peaks(mx)
     # remove mx with dt < 3
