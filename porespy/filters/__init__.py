@@ -84,6 +84,7 @@ from ._funcs import trim_extrema
 from ._funcs import trim_floating_solid
 from ._funcs import trim_nonpercolating_paths
 from ._funcs import trim_small_clusters
+from ._magnet import magnet
 from ._magnet import find_junctions
 from ._magnet import find_pore_bodies
 from ._magnet import find_throat_skeleton
