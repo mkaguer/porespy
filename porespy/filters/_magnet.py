@@ -455,25 +455,13 @@ if __name__ == "__main__":
 
     # %% MAGNET Extraction
     start_m = time.time()
-    # create skeleton
-    sk = ski.morphology.skeletonize_3d(im)/255
-    # find all the junctions
-    pt = ps.filters.find_junctions(sk)
-    # distance transform
-    dt = edt(im)
-    # find pore bodies
-    fbd = ps.filters.find_pore_bodies(sk, dt, pt)
-    # throat segmentation
-    ts = ps.filters.find_throat_skeleton(sk, pt, fbd)
-    # create network object
-    checkpoint_m = time.time()
-    net = ps.filters.spheres_to_network(sk, fbd, ts, voxel_size=voxel_size)
+    net = magnet(im, voxel_size=voxel_size)
     end_m = time.time()
     print('MAGNET Extraction Complete')
+
     net_m = op.io.network_from_porespy(net)
-    # net_m.models.clear()
-    net_m['pore.diameter'] = net_m['pore.radius'] * 2   
-    
+    net_m['pore.diameter'] = net_m['pore.radius'] * 2
+
     # network health
     h = op.utils.check_network_health(net_m)
     dis_pores = np.zeros(net_m.Np, dtype=bool)
@@ -584,6 +572,9 @@ if __name__ == "__main__":
 
     # Calculate extraction times and output
     time_m = end_m - start_m
-    time_s2n = end_m - checkpoint_m
     print(f'MAGNET extraction time is: {time_m:.2f} s')
-    print(f'Spheres to Network time is: {time_s2n:.2f} s')
+    
+    net_m['throat.radius'] = net_m['throat.diameter']/2
+    project = net_m.project
+    op.io.project_to_vtk(project, filename='magnet-256')
+    op.io.project_to_xdmf(project, filename='magnet-256')
