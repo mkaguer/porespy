@@ -364,7 +364,6 @@ def skeleton_parallel(im, overlap=None, cores=None):
     if cores is None:
         cores = settings.ncores
     divs = cores
-    overlap = _estimate_overlap(im, mode='dt')
     depth = {}
     for i in range(im.ndim):
         depth[i] = np.round(overlap).astype(int)
