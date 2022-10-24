@@ -458,7 +458,7 @@ if __name__ == "__main__":
 
     # %% MAGNET Extraction
     start_m = time.time()
-    net = magnet(im, voxel_size=voxel_size)
+    net = magnet(im, voxel_size=voxel_size, l_max=7)
     end_m = time.time()
     print('MAGNET Extraction Complete')
 
