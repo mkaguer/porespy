@@ -333,7 +333,7 @@ def reduce_peaks(peaks):
     return peaks_new
 
 
-def skeleton_parallel(im, overlap=None, cores=None):
+def skeleton_parallel(im, divs, overlap=None, cores=None):
     r"""
     Performs `skimage.morphology.skeleton_3d` in parallel using dask
 
@@ -342,6 +342,9 @@ def skeleton_parallel(im, overlap=None, cores=None):
     im : ndarray
         A binary image of porous media with 'True' values indicating
         phase of interest.
+    divs : ndarray
+        The number of divisions in each dimension used for chunking the image
+        (e.g. [2, 2, 4])
     overlap : float (optional)
         The amount of overlap to apply between chunks.  If not provided it
         will be estiamted using ``porespy.tools.estimate_overlap`` with
@@ -363,7 +366,6 @@ def skeleton_parallel(im, overlap=None, cores=None):
         overlap = _estimate_overlap(im, mode='dt') # FIXME: perform dt once!
     if cores is None:
         cores = settings.ncores
-    divs = cores
     depth = {}
     for i in range(im.ndim):
         depth[i] = np.round(overlap).astype(int)
