@@ -10,9 +10,10 @@ import dask.array as da
 from skimage.morphology import skeletonize_3d
 from porespy import settings
 from porespy.filters._snows import _estimate_overlap
+from porespy.filters import find_dt_artifacts
 
 
-def magnet(im, sk=None, voxel_size=1, l_max=7):
+def magnet(im, sk=None, boundary_pores=False, voxel_size=1, l_max=7):
     r"""
     find all the junctions in the skelton. It uses convolution to find voxels
     with extra neighbors, as well as terminal points on the ends of branches.
@@ -22,9 +23,14 @@ def magnet(im, sk=None, voxel_size=1, l_max=7):
         An image of the porous material of interest
     sk : ndarray
         The skeleton of an image (boolean).
+    boundary_pores : boolean (default = True)
+        If True then boundary pores are assumed at the edge of the image.
+        Skeleton with padding must have been used. This is being tested.
     voxel_size : scalar (default = 1)
         The resolution of the image, expressed as the length of one side of a
         voxel, so the volume of a voxel would be voxel_size-cubed
+    l_max : scalar (default = 7)
+        The size of the maximum filter used in finding pores along long throats
     Returns
     -------
     net : dict
@@ -38,6 +44,14 @@ def magnet(im, sk=None, voxel_size=1, l_max=7):
     pt = ps.filters.find_junctions(sk)
     # distance transform
     dt = edt(im)
+    # prevent interior pores from overlapping boundary pores
+    if boundary_pores is True:
+        if im.ndim == 2:
+            error = find_dt_artifacts(dt[1:-1, 1:-1])
+        else:
+            error = find_dt_artifacts(dt[1:-1, 1:-1, 1:-1])
+        error = np.pad(error, 1, mode='constant', constant_values=0)
+        dt = dt - error
     # insert pores at junction points
     fbd = ps.filters.find_pore_bodies(sk, dt, pt, l_max)
     # find throat skeleton
