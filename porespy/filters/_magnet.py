@@ -41,7 +41,7 @@ def magnet(im, sk=None, boundary_pores=False, voxel_size=1, l_max=7):
     if sk is None:
         sk = ski.morphology.skeletonize_3d(im)/255
     # find junction points
-    pt = ps.filters.find_junctions(sk)
+    pt = find_junctions(sk)
     # distance transform
     dt = edt(im)
     # prevent interior pores from overlapping boundary pores
@@ -53,11 +53,11 @@ def magnet(im, sk=None, boundary_pores=False, voxel_size=1, l_max=7):
         error = np.pad(error, 1, mode='constant', constant_values=0)
         dt = dt - error
     # insert pores at junction points
-    fbd = ps.filters.find_pore_bodies(sk, dt, pt, l_max)
+    fbd = find_pore_bodies(sk, dt, pt, l_max)
     # find throat skeleton
-    ts = ps.filters.find_throat_skeleton(sk, pt, fbd)
+    ts = find_throat_skeleton(sk, pt, fbd)
     # convert spheres to network dictionary
-    net = ps.filters.spheres_to_network(sk, fbd, ts, voxel_size=voxel_size)
+    net = spheres_to_network(sk, fbd, ts, voxel_size=voxel_size)
     return net
     
 
