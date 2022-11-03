@@ -499,35 +499,9 @@ if __name__ == "__main__":
         ax.axis("off");
         print('Visualization Complete')
 
-    # find surface pores
-    op.topotools.find_surface_pores(net_m)
-    surface_pores = net_m['pore.surface']
+    net_m['pore.left'] = net_m['pore.coords'][:, 0] == 0
+    net_m['pore.right'] = net_m['pore.coords'][:, 0] == (im.shape[0] - 1) * voxel_size
 
-    # label left, right, back, and front pores
-    net_m['pore.left'] = np.zeros(net_m.Np, dtype=bool)
-    net_m['pore.left'][surface_pores] = net_m['pore.coords'][surface_pores][:, 0] < a
-    net_m['pore.right'] = np.zeros(net_m.Np, dtype=bool)
-    net_m['pore.right'][surface_pores] = net_m['pore.coords'][surface_pores][:, 0] > b
-    '''
-    # add boundary pores
-    left = net_m.pores(['left', 'surface'], mode='and')
-    right = net_m.pores(['right', 'surface'], mode='and')        
-    op.topotools.add_boundary_pores(net_m,
-                                    pores=left,
-                                    move_to=[0, None, None],
-                                    apply_label='left_boundary')
-    op.topotools.add_boundary_pores(net_m,
-                                    pores=right,
-                                    move_to=[im.shape[0]*voxel_size, None, None],
-                                    apply_label='right_boundary')
-
-    # assign parent radius to cloned pores
-    left_boundary = net_m.pores('left_boundary')
-    right_boundary = net_m.pores('right_boundary')
-    net_m['pore.radius'][left_boundary] = net_m['pore.radius'][left]
-    net_m['pore.radius'][right_boundary] = net_m['pore.radius'][right]
-    net_m['pore.diameter'] = net_m['pore.radius'] * 2
-    '''
     # visualize MAGNET network
     if twod:
         plt.figure(3)
@@ -552,14 +526,7 @@ if __name__ == "__main__":
     # add geometry models to network
     net_m.add_model_collection(geo)
     net_m.regenerate_models()
-    
-    # throat diameter of boundary pores
-    # left_throats = net_m.find_neighbor_throats(left_boundary)
-    # net_m['throat.diameter'][left_throats] = net_m['pore.diameter'][left_boundary]
-    # right_throats = net_m.find_neighbor_throats(right_boundary)
-    # net_m['throat.diameter'][right_throats] = net_m['pore.diameter'][right_boundary]
-    # net_m.regenerate_models(exclude=['throat.diameter'])
-    
+
     # phase
     phase_m = op.phase.Phase(network=net_m)
     phase_m['pore.viscosity'] = mu
