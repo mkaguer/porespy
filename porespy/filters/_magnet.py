@@ -406,7 +406,7 @@ if __name__ == "__main__":
     print(f"Elapsed time (skimage): {time.time() - t0:.2f} s")
     # perform skeleton_3d in parallel
     t0 = time.time()
-    sk_p = skeleton_parallel(im)
+    sk_p = skeleton_parallel(im, divs=[2,2,2], overlap=5, cores=8)
     print(f"Elapsed time (parallel): {time.time() - t0:.2f} s")
     # plot
     fig, ax = plt.subplots(ncols=2, figsize=(8, 4))
