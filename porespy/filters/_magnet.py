@@ -465,7 +465,7 @@ if __name__ == "__main__":
         # Parameters
         x, y, z = 2.25e-6, 2.25e-6, 2.25e-6
         mu = 1e-3  # Pa s
-        Pin = 22.5  # 10kPa/m
+        Pin = 22.5  # Pa (from: 10kPa/m)
         Pout = 0
         Delta_P = Pin - Pout
         A = (y * 1000) * (z * 1000)
