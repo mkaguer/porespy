@@ -462,7 +462,13 @@ if __name__ == "__main__":
 
     # %% MAGNET Extraction
     start_m = time.time()
-    net = magnet(im, voxel_size=voxel_size, l_max=7)
+    im_pad = np.pad(im, pd, mode='edge')
+    sk = ski.morphology.skeletonize_3d(im_pad)/255
+    if twod:
+        sk = sk[pd:im.shape[0]+pd, pd:im.shape[0]+pd]
+    else:
+        sk = sk[pd:im.shape[0]+pd, pd:im.shape[0]+pd, pd:im.shape[0]+pd]
+    net = magnet(im, sk, boundary_pores=True, voxel_size=voxel_size, l_max=7)
     end_m = time.time()
     print('MAGNET Extraction Complete')
 
