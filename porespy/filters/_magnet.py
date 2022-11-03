@@ -424,6 +424,9 @@ if __name__ == "__main__":
     np.random.seed(10)
 
     twod = False
+    export = False
+    
+    pd = 20
 
     # %% Generate a test image
     if twod:
