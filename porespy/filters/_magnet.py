@@ -568,7 +568,8 @@ if __name__ == "__main__":
     time_m = end_m - start_m
     print(f'MAGNET extraction time is: {time_m:.2f} s')
     
-    net_m['throat.radius'] = net_m['throat.diameter']/2
-    project = net_m.project
-    op.io.project_to_vtk(project, filename='magnet-256')
-    op.io.project_to_xdmf(project, filename='magnet-256')
+    if export:
+        net_m['throat.radius'] = net_m['throat.diameter']/2
+        project = net_m.project
+        op.io.project_to_vtk(project, filename='magnet-256')
+        op.io.project_to_xdmf(project, filename='magnet-256')
