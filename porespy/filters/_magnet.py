@@ -51,13 +51,13 @@ def magnet(im, sk=None, boundary_pores=False, voxel_size=1, l_max=7):
         else:
             error = find_dt_artifacts(dt[1:-1, 1:-1, 1:-1])
         error = np.pad(error, 1, mode='constant', constant_values=0)
-        dt = dt - error
+        dt_error = dt - error
     # insert pores at junction points
-    fbd = find_pore_bodies(sk, dt, pt, l_max)
+    fbd = find_pore_bodies(sk, dt_error, pt, l_max)
     # find throat skeleton
     ts = find_throat_skeleton(sk, pt, fbd)
     # convert spheres to network dictionary
-    net = spheres_to_network(sk, fbd, ts, voxel_size=voxel_size)
+    net = spheres_to_network(sk, dt, fbd, ts, voxel_size=voxel_size)
     return net
     
 
@@ -233,7 +233,7 @@ def find_throat_skeleton(sk, pt, fbd):
     return ts
 
 
-def spheres_to_network(sk, fbd, ts, voxel_size=1):
+def spheres_to_network(sk, dt, fbd, ts, voxel_size=1):
     r"""
     Analyzes an image that has been partitioned into pore regions and extracts
     the pore and throat geometry as well as network connectivity.
@@ -260,6 +260,7 @@ def spheres_to_network(sk, fbd, ts, voxel_size=1):
     throats, num_throats = spim.label(ts.throats, structure=s)
     slicess = spim.find_objects(throats)  # Nt by 2
     t_conns = np.zeros((len(slicess), 2), dtype=int)  # initialize
+    t_radius = np.zeros((len(slicess)), dtype=float)
     # Initialize arrays
     Ps = np.arange(1, np.amax(fbd.Ps)+1)  # check that this works!!
     Np = np.size(Ps)
@@ -284,9 +285,24 @@ def spheres_to_network(sk, fbd, ts, voxel_size=1):
         if np.any(Pn_l):
             Pn_l = Pn_l[0:2]
             t_conns[throat_l, :] = Pn_l
+        # FIXME: move to outside of loop, find overlapping pores 
+        R1 = fbd.p_radius[t_conns[throat_l, 0]]
+        R2 = fbd.p_radius[t_conns[throat_l, 1]]
+        pt1 = fbd.p_coords[t_conns[throat_l, 0]]
+        pt2 = fbd.p_coords[t_conns[throat_l, 1]]
+        dist = np.linalg.norm(pt1 - pt2)
+        # throat radius
+        sub_dt = dt[ss]
+        throat_dt = throat_im * sub_dt
+        if dist <= R1 + R2:
+            t_radius[throat_l] = np.min([R1, R2])
+        else:
+            # It happens rarely that the radius is the smallest dt value on the throat sk
+            t_radius[throat_l] = np.min(np.append(throat_dt[throat_dt != 0], [R1, R2]))
     # remove duplicates in t_conns
     remove = np.where(t_conns[:, 0] == t_conns[:, 1])
     t_conns = np.delete(t_conns, remove, axis=0)
+    t_radius = np.delete(t_radius, remove, axis=0)
     # pore coords
     p_coords = fbd.p_coords.astype('float')
     if fbd.Ps.ndim == 2:  # If 2D, add 0's in 3rd dimension
@@ -298,6 +314,7 @@ def spheres_to_network(sk, fbd, ts, voxel_size=1):
     net['pore.coords'] = p_coords * voxel_size
     # Define geometric information
     # add radius
+    net['throat.radius'] = t_radius * voxel_size
     net['pore.radius'] = fbd.p_radius * voxel_size
     return net
 
@@ -437,7 +454,7 @@ if __name__ == "__main__":
     ps.visualization.set_mpl_style()
     np.random.seed(10)
 
-    twod = False
+    twod = True
     export = False
     
     pd = 20
@@ -488,6 +505,7 @@ if __name__ == "__main__":
 
     net_m = op.io.network_from_porespy(net)
     net_m['pore.diameter'] = net_m['pore.radius'] * 2
+    net_m['throat.diameter'] = net_m['throat.radius'] * 2
 
     # network health
     h = op.utils.check_network_health(net_m)
@@ -533,10 +551,11 @@ if __name__ == "__main__":
 
     # %% Run Stokes Flow algorithm on extracted network
     # collection of geometry models, delete pore.diameter and pore.volume models
-    geo = op.models.collections.geometry.cones_and_cylinders
-    del geo['pore.diameter'], geo['pore.volume']
+    geo = op.models.collections.geometry.spheres_and_cylinders
+    del geo['pore.diameter'], geo['pore.volume'], geo['throat.diameter']
     # set pore.diameter
     net_m['pore.diameter'] = net_m['pore.diameter'].copy()
+    net_m['throat.diameter'] = net_m['throat.diameter'].copy()
     # add geometry models to network
     net_m.add_model_collection(geo)
     net_m.regenerate_models()
