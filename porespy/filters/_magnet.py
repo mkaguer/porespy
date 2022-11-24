@@ -409,35 +409,73 @@ def skeleton_parallel(im, divs, overlap=None, cores=None):
     return skel
 
 
-if __name__ == "__main__":
-    '''
-    import porespy as ps
-    import matplotlib.pyplot as plt
-    import time
-    np.random.seed(10)
-    im = ps.generators.blobs([128, 128, 128], blobiness=0.7, porosity=0.65)
-    im = ps.filters.trim_floating_solid(im)
-    # perform skeleton_3d
-    t0 = time.time()
-    sk = skeletonize_3d(im).astype(bool)
-    print(f"Elapsed time (skimage): {time.time() - t0:.2f} s")
-    # perform skeleton_3d in parallel
-    t0 = time.time()
-    sk_p = skeleton_parallel(im, divs=[2,2,2], overlap=5, cores=8)
-    print(f"Elapsed time (parallel): {time.time() - t0:.2f} s")
-    # plot
-    fig, ax = plt.subplots(ncols=2, figsize=(8, 4))
+def skeleton(im, padding=20, parallel=False, **kwargs):
+    r"""
+    This helper function adds padding to an image before the skeleton is
+    determined. This is useful for determining boundary pores in conjunction
+    with MAGNET. This method uses `skimage.morphology.skeleton_3d` in either
+    serial or parallel.
+
+    Parameters
+    ----------
+    im : ndarray
+        A binary image of porous media with 'True' values indicating
+        phase of interest.
+    padding : integer
+        The amount of padding to add to the image before determining the
+        skeleton.
+    parallel : boolean
+        If `False` the skeleton is calculated in serial. This is the default
+        mode. However, if `True`, the skeleton is calculated in parallel using
+        dask.
+
+    Returns
+    -------
+    sk : ndarray
+        Skeleton of image
+
+    """
+    # trim floating solid
     if im.ndim == 3:
-        ax[0].imshow(sk[:, :, 50], origin="lower")
-        ax[1].imshow(sk_p[:, :, 50], origin="lower")
-    else:
-        ax[0].imshow(sk, origin="lower")
-        ax[1].imshow(sk_p, origin="lower")
-    N_ones = sk.sum()
-    N_ones_not_matched = (sk != sk_p).sum()
-    accuracy = (1 - N_ones_not_matched / N_ones)
-    print(f"Accuracy: {accuracy*100:.9f} %")
-    '''
+        ps.filters.trim_floating_solid(im, conn=6)
+    # add pading
+    padded = np.pad(im, padding, mode='edge')
+    # perform skeleton
+    if parallel is False:  # serial
+        sk = ski.morphology.skeletonize_3d(padded)/255
+    if parallel is True:
+        sk = skeleton_parallel(padded, **kwargs)
+    # remove padding
+    sk = ps.tools.unpad(sk, pad_width=padding)
+    return sk
+
+
+def _check_skeleton_health(sk):
+    r"""
+    This function checks the health of the skeleton by looking for any shells.
+
+    Parameters
+    ----------
+    sk : ndarray
+        The skeleton of an image
+
+    Returns
+    -------
+    N_shells : int
+        The number of shells detected in the skeleton. If any shells are
+        detected a warning is triggered.
+    """
+    _, N = spim.label(input=~sk.astype('bool'))
+    N_shells = N - 1
+    if N_shells > 0:
+        logger.warning(f"{N_shells} shells were detected in the skeleton. "
+                       "Make sure to trim floating solids before taking the "
+                       "skeleton. This can be done using: "
+                       "`ps.filters.trim_floating_solid(im, conn=6)`")
+    return N_shells
+
+
+if __name__ == "__main__":
     '''
     Simulation using MAGNET extraction
 
