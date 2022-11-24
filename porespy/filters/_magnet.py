@@ -197,125 +197,120 @@ def find_pore_bodies(sk, dt, pt, l_max=7):
     fbd.Ps = Ps
     fbd.Ps2 = Ps2
     fbd.mx = mx
-    fbd.p_coords = np.array(p_coords)
-    fbd.p_radius = np.array(p_radius)
+    fbd.p_coords = p_coords
+    fbd.p_radius = p_radius
     return fbd
 
 
-def find_throat_skeleton(sk, pt, fbd):
+def spheres_to_network(sk, dt, fbd, pt, voxel_size=1):
     r"""
-    Identify throat segments corresponding to the overlapping pores by
-    finding the border of each region, then finding the skeleton that
-    overlaps this border.
-    parameters
-    ------------
-    im : ndarray
-        The image of the pore space
-    sk : ndarray
-        The skeleton of an image (boolean).
-    fbd: ndarray
-        Inserted spheres using find_pore_bodies function.
-    Returns
-    -------
-    ts : Results object
-        A custom object with the following data added as named attributes:
-        'throats'
-        The skeleton segmented by having all junctions and local maximum points
-        removed
-    """
-    # segment sk into throats
-    mx = fbd.mx
-    pt = pt.juncs
-    throats = (~((pt + mx) > 0)) * sk
-    # results object
-    ts = Results()
-    ts.throats = throats
-    return ts
+    Assemable a dictionary object containing essential topological and
+    geometrical information. The skeleton and an image with spheres already
+    inserted is used to determine the essential throat and pore properties:
+    throat.conns, throat.radius, pore.coords, and pore.radius. Labels are also
+    created for overlapping throats and boundary pores.
 
-
-def spheres_to_network(sk, dt, fbd, ts, voxel_size=1):
-    r"""
-    Analyzes an image that has been partitioned into pore regions and extracts
-    the pore and throat geometry as well as network connectivity.
-    parameters
+    Parameters
     ------------
     sk : ndarray
         The skeleton of an image (boolean).
-    fbd: ndarray
-        Inserted spheres using find_pore_bodies function.
-    throats : ndarray
-        Segmented throats using find_throat_skeleton function.
+    dt : ndarray
+        The distance transform of an image
+    fbd: Results object
+        A custom object returned from insert_pore_bodies()
+    pt : Results object
+        A custom object returned from find_junctions()
     voxel_size : scalar (default = 1)
         The resolution of the image, expressed as the length of one side of a
         voxel, so the volume of a voxel would be **voxel_size**-cubed.
+
     Returns
     -------
     net : dict
-        A dictionary containing all the pore and throat size data, as well as
-        the network topological information.  The dictionary names use the
-        OpenPNM convention (i.e. 'pore.coords', 'throat.conns').
+        A dictionary containing the most important pore and throat size data
+        and topological data. These are pore radius, throat radius, pore
+        coordinates, and throat connections. The dictionary names use the
+        OpenPNM convention (i.e. 'pore.coords', 'throat.conns', 'pore.radius',
+        'throat.radius'). Labels for boundary pores and overlapping throats
+        are also returned.
     """
-    # create structuring element
-    s = spim.generate_binary_structure(fbd.Ps.ndim, fbd.Ps.ndim)
-    throats, num_throats = spim.label(ts.throats, structure=s)
+    # no. of dimensions and shape
+    ND = fbd.Ps.ndim
+    shape = fbd.Ps.shape
+    # identify throat segments
+    mx = fbd.mx
+    pt = pt.juncs
+    throats = (~((pt + mx) > 0)) * sk
+    s = spim.generate_binary_structure(ND, ND)
+    throats, num_throats = spim.label(throats, structure=s)
     slicess = spim.find_objects(throats)  # Nt by 2
-    t_conns = np.zeros((len(slicess), 2), dtype=int)  # initialize
+    # initialize throat conns and radius
+    t_conns = np.zeros((len(slicess), 2), dtype=int)
     t_radius = np.zeros((len(slicess)), dtype=float)
-    # Initialize arrays
-    Ps = np.arange(1, np.amax(fbd.Ps)+1)  # check that this works!!
-    Np = np.size(Ps)
+    # loop through throats to get t_conns and t_radius
     for i in range(num_throats):
         throat_l = i
-        if slicess[throat_l] is None:
-            continue
-        ss = extend_slice(slicess[throat_l], fbd.Ps2.shape)
+        ss = extend_slice(slicess[throat_l], shape)
+        # get slices
         sub_im_p = fbd.Ps2[ss]
         sub_im_l = throats[ss]
-        throat_im = sub_im_l == i+1
-        if len(fbd.Ps2.shape) == 3:
-            structure = spim.generate_binary_structure(3, 2)
-        else:
-            structure = spim.generate_binary_structure(2, 2)
         sub_sk = sk[ss]
+        sub_dt = dt[ss]
+        throat_im = sub_im_l == i+1
+        # dilate throat_im to capture connecting pore indices
+        structure = spim.generate_binary_structure(ND, 2)
         im_w_throats_l = spim.binary_dilation(input=throat_im,
                                               structure=structure)
         im_w_throats_l = im_w_throats_l * sub_sk
         im_w_throats_l = im_w_throats_l * sub_im_p
+        # throat conns
         Pn_l = np.unique(im_w_throats_l)[1:] - 1
         if np.any(Pn_l):
             Pn_l = Pn_l[0:2]
             t_conns[throat_l, :] = Pn_l
-        # FIXME: move to outside of loop, find overlapping pores 
-        R1 = fbd.p_radius[t_conns[throat_l, 0]]
-        R2 = fbd.p_radius[t_conns[throat_l, 1]]
-        pt1 = fbd.p_coords[t_conns[throat_l, 0]]
-        pt2 = fbd.p_coords[t_conns[throat_l, 1]]
-        dist = np.linalg.norm(pt1 - pt2)
         # throat radius
-        sub_dt = dt[ss]
         throat_dt = throat_im * sub_dt
-        if dist <= R1 + R2:
-            t_radius[throat_l] = np.min([R1, R2])
-        else:
-            # It happens rarely that the radius is the smallest dt value on the throat sk
-            t_radius[throat_l] = np.min(np.append(throat_dt[throat_dt != 0], [R1, R2]))
-    # remove duplicates in t_conns
+        t_radius[throat_l] = np.min(throat_dt[throat_dt != 0])
+    # remove duplicates (if any) in t_conns
     remove = np.where(t_conns[:, 0] == t_conns[:, 1])
     t_conns = np.delete(t_conns, remove, axis=0)
     t_radius = np.delete(t_radius, remove, axis=0)
+    # find overlapping pores
+    Nt = len(t_conns)
+    P1 = t_conns[:, 0]
+    P2 = t_conns[:, 1]
+    R1 = fbd.p_radius[P1]
+    R2 = fbd.p_radius[P2]
+    pt1 = fbd.p_coords[P1]
+    pt2 = fbd.p_coords[P2]
+    dist = np.linalg.norm(pt1 - pt2, axis=1)
+    t_overlapping = dist <= R1 + R2
+    # set throat radius of overlapping pores
+    Rs = np.hstack((R1.reshape((Nt, 1)), R2.reshape((Nt, 1))))
+    Rmin = np.min(Rs, axis=1)
+    t_radius[t_overlapping] = 0.95 * Rmin[t_overlapping]
+    # ensure throat radius is smaller than pore radii
+    mask = Rmin <= t_radius
+    t_radius[mask] = 0.95 * Rmin[mask]
     # pore coords
     p_coords = fbd.p_coords.astype('float')
-    if fbd.Ps.ndim == 2:  # If 2D, add 0's in 3rd dimension
+    if ND == 2:  # If 2D, add 0's in 3rd dimension
+        Np = np.amax(fbd.Ps)
         p_coords = np.vstack((p_coords.T, np.zeros((Np, )))).T
     # create network dictionary
     net = {}
-    # Define all the fundamentals for a pore network
     net['throat.conns'] = t_conns
     net['pore.coords'] = p_coords * voxel_size
-    # Define geometric information
-    # add radius
     net['throat.radius'] = t_radius * voxel_size
     net['pore.radius'] = fbd.p_radius * voxel_size
+    net['throat.overlapping'] = t_overlapping
+    net['pore.xmin'] = p_coords[:, 0] == 0
+    net['pore.xmax'] = p_coords[:, 0] == shape[0]-1
+    net['pore.ymin'] = p_coords[:, 1] == 0
+    net['pore.ymax'] = p_coords[:, 1] == shape[1]-1
+    if ND == 3:
+        net['pore.zmin'] = p_coords[:, 2] == 0
+        net['pore.zmax'] = p_coords[:, 2] == shape[2]-1
     return net
 
 
