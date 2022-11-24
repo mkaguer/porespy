@@ -480,8 +480,6 @@ if __name__ == "__main__":
     Simulation using MAGNET extraction
 
     '''
-    
-
     # import packages
     import porespy as ps
     import openpnm as op
@@ -492,10 +490,8 @@ if __name__ == "__main__":
     ps.visualization.set_mpl_style()
     np.random.seed(10)
 
-    twod = True
+    twod = False
     export = False
-    
-    pd = 20
 
     # %% Generate a test image
     if twod:
@@ -531,13 +527,7 @@ if __name__ == "__main__":
 
     # %% MAGNET Extraction
     start_m = time.time()
-    im_pad = np.pad(im, pd, mode='edge')
-    sk = ski.morphology.skeletonize_3d(im_pad)/255
-    if twod:
-        sk = sk[pd:im.shape[0]+pd, pd:im.shape[0]+pd]
-    else:
-        sk = sk[pd:im.shape[0]+pd, pd:im.shape[0]+pd, pd:im.shape[0]+pd]
-    net = magnet(im, sk, boundary_pores=True, voxel_size=voxel_size, l_max=7)
+    net = magnet(im, voxel_size=voxel_size)
     end_m = time.time()
     print('MAGNET Extraction Complete')
 
@@ -569,9 +559,6 @@ if __name__ == "__main__":
         ax.axis("off");
         print('Visualization Complete')
 
-    net_m['pore.left'] = net_m['pore.coords'][:, 0] == 0
-    net_m['pore.right'] = net_m['pore.coords'][:, 0] == (im.shape[0] - 1) * voxel_size
-
     # visualize MAGNET network
     if twod:
         plt.figure(3)
@@ -581,7 +568,7 @@ if __name__ == "__main__":
         op.visualization.plot_coordinates(ax=fig,
                                           network=net_m,
                                           size_by=net_m["pore.diameter"],
-                                          color_by=net_m["pore.left"],
+                                          color_by=net_m["pore.xmin"],
                                           markersize=200)
         op.visualization.plot_connections(network=net_m, ax=fig)
         ax.axis("off");
@@ -589,7 +576,7 @@ if __name__ == "__main__":
 
     # %% Run Stokes Flow algorithm on extracted network
     # collection of geometry models, delete pore.diameter and pore.volume models
-    geo = op.models.collections.geometry.spheres_and_cylinders
+    geo = op.models.collections.geometry.cubes_and_cuboids
     del geo['pore.diameter'], geo['pore.volume'], geo['throat.diameter']
     # set pore.diameter
     net_m['pore.diameter'] = net_m['pore.diameter'].copy()
@@ -608,8 +595,8 @@ if __name__ == "__main__":
     phase_m.regenerate_models()
 
     # Stokes flow algorithm on MAGNET network
-    inlet_m = net_m.pores('left')
-    outlet_m = net_m.pores('right')
+    inlet_m = net_m.pores('xmin')
+    outlet_m = net_m.pores('xmax')
     flow_m = op.algorithms.StokesFlow(network=net_m, phase=phase_m)
     flow_m.set_value_BC(pores=inlet_m, values=Pin)
     flow_m.set_value_BC(pores=outlet_m, values=Pout)
@@ -624,7 +611,7 @@ if __name__ == "__main__":
     # Calculate extraction times and output
     time_m = end_m - start_m
     print(f'MAGNET extraction time is: {time_m:.2f} s')
-    
+
     if export:
         net_m['throat.radius'] = net_m['throat.diameter']/2
         project = net_m.project
