@@ -2,17 +2,17 @@ import logging
 import numpy as np
 import scipy as sp
 import scipy.ndimage as spim
+import skimage as ski
 from edt import edt
+import dask.array as da
 from skimage.morphology import square, cube
 from porespy.tools import _insert_disks_at_points_m, make_contiguous
 from porespy.tools import extend_slice, Results
-import time
-import dask.array as da
-from skimage.morphology import skeletonize_3d
 from porespy import settings
 from porespy.filters._snows import _estimate_overlap
 
 logger = logging.getLogger(__name__)
+
 
 def magnet(im,
            sk=None,
@@ -470,7 +470,7 @@ def skeleton_parallel(im, divs, overlap=None, cores=None):
     chunk_shape = (np.array(im.shape) / np.array(divs)).astype(int)
     skel = da.from_array(im, chunks=chunk_shape)
     skel = da.overlap.overlap(skel, depth=depth, boundary='none')
-    skel = skel.map_blocks(skeletonize_3d)
+    skel = skel.map_blocks(ski.morphology.skeletonize_3d)
     skel = da.overlap.trim_internal(skel, depth, boundary='none')
     skel = skel.compute(num_workers=cores).astype(bool)
     return skel
@@ -549,7 +549,6 @@ if __name__ == "__main__":
     # import packages
     import porespy as ps
     import openpnm as op
-    import skimage as ski
     import matplotlib.pyplot as plt
     import time
 
