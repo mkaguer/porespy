@@ -394,7 +394,7 @@ def skeleton_parallel(im, divs, overlap=None, cores=None):
 
     """
     if overlap is None:
-        overlap = _estimate_overlap(im, mode='dt') # FIXME: perform dt once!
+        overlap = _estimate_overlap(im, mode='dt')
     if cores is None:
         cores = settings.ncores
     depth = {}
