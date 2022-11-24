@@ -6,9 +6,10 @@ import skimage as ski
 from edt import edt
 import dask.array as da
 from skimage.morphology import square, cube
-from porespy.tools import _insert_disks_at_points_m, make_contiguous
-from porespy.tools import extend_slice, Results
+from porespy.tools import _insert_disks_at_points_m, make_contiguous, unpad
+from porespy.tools import extend_slice, insert_sphere, Results
 from porespy import settings
+from porespy.filters import trim_floating_solid
 from porespy.filters._snows import _estimate_overlap
 
 logger = logging.getLogger(__name__)
@@ -210,14 +211,11 @@ def insert_pore_bodies(sk, dt, pt, l_max=7, numba=False):
     if not numba:
         p_coords = []
         for n, row in enumerate(d):
-            coords = row[0:ND]
-            if Ps[tuple(coords)] == 0:
-                p_coords.append(coords)
-                ps.tools.insert_sphere(im=Ps,
-                                       c=coords,
-                                       r=row[ND],
-                                       v=n+1,
-                                       overwrite=True)
+            coord = row[0:ND]
+            if Ps[tuple(coord)] == 0:
+                p_coords.append(coord)
+                v = n + 1
+                insert_sphere(im=Ps, c=coord, r=row[ND], v=v, overwrite=True)
     # Find maximums on long throats
     temp = Ps * np.inf
     mask = np.isnan(temp)
@@ -247,14 +245,11 @@ def insert_pore_bodies(sk, dt, pt, l_max=7, numba=False):
     if not numba:
         ss = n + 1
         for n, row in enumerate(d):
-            coords = row[0:ND]
-            if Ps[tuple(coords)] == 0:
-                p_coords.append(coords)
-                ps.tools.insert_sphere(im=Ps,
-                                       c=coords,
-                                       r=row[ND],
-                                       v=ss+n+1,
-                                       overwrite=False)
+            coord = row[0:ND]
+            if Ps[tuple(coord)] == 0:
+                p_coords.append(coord)
+                v = ss+n+1
+                insert_sphere(im=Ps, c=coord, r=row[ND], v=v, overwrite=False)
         p_coords = np.array(p_coords)
     # retrieve radius
     p_radius = np.array([dt[tuple(co)] for co in p_coords])
@@ -504,7 +499,7 @@ def skeleton(im, padding=20, parallel=False, **kwargs):
     """
     # trim floating solid
     if im.ndim == 3:
-        ps.filters.trim_floating_solid(im, conn=6)
+        trim_floating_solid(im, conn=6)
     # add pading
     padded = np.pad(im, padding, mode='edge')
     # perform skeleton
@@ -513,7 +508,7 @@ def skeleton(im, padding=20, parallel=False, **kwargs):
     if parallel is True:
         sk = skeleton_parallel(padded, **kwargs)
     # remove padding
-    sk = ps.tools.unpad(sk, pad_width=padding)
+    sk = unpad(sk, pad_width=padding)
     return sk
 
 
