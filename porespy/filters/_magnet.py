@@ -536,9 +536,8 @@ def _check_skeleton_health(sk):
     N_shells = N - 1
     if N_shells > 0:
         logger.warning(f"{N_shells} shells were detected in the skeleton. "
-                       "Make sure to trim floating solids before taking the "
-                       "skeleton. This can be done using: "
-                       "`ps.filters.trim_floating_solid(im, conn=6)`")
+                       "Trim floating solids using: "
+                       "porespy.filters.trim_floating_solid()")
     return N_shells
 
 
