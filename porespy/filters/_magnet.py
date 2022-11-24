@@ -1,74 +1,120 @@
+import logging
 import numpy as np
 import scipy as sp
 import scipy.ndimage as spim
 from edt import edt
 from skimage.morphology import square, cube
-from porespy.tools import _insert_disk_at_points, make_contiguous
+from porespy.tools import _insert_disks_at_points_m, make_contiguous
 from porespy.tools import extend_slice, Results
 import time
 import dask.array as da
 from skimage.morphology import skeletonize_3d
 from porespy import settings
 from porespy.filters._snows import _estimate_overlap
-from porespy.filters import find_dt_artifacts
 
+logger = logging.getLogger(__name__)
 
-def magnet(im, sk=None, boundary_pores=False, voxel_size=1, l_max=7):
+def magnet(im,
+           sk=None,
+           padding=20,
+           parallel=False,
+           numba=False,
+           keep_boundary_pores=True,
+           voxel_size=1,
+           l_max=7,
+           **kwargs):
     r"""
-    find all the junctions in the skelton. It uses convolution to find voxels
-    with extra neighbors, as well as terminal points on the ends of branches.
-    parameters
+    Perform a Medial Axis Guided Network ExtracTion (MAGNET) on an image of
+    porous media. This is a modernized python implementation of an efficient
+    network extraction method. First the skeleton of the provided image is
+    determined. Padding is added to the image before getting the skeleton to
+    help identify boundary pores. The skeleton can be computed in serial or
+    parallel modes. Next all the junction points of the skeleton are determined
+    by using convolution to find voxels with extra neighbors, as well as
+    terminal points on the ends of branches. Pores are then inserted at these
+    points. The size of the pores inserted is based on the distance transform
+    value at it's junction. This approach results in many long throats so more
+    pores are added using a maximum filter along long throats to find openings.
+    Throats are found from how the skeleton connects the junction points. To
+    ensure an efficient network extraction method, only the most fundamential
+    pare and throat properties are calculated.
+
+    Parameters
     ------------
     im : ndarray
         An image of the porous material of interest
     sk : ndarray
-        The skeleton of an image (boolean).
-    boundary_pores : boolean (default = True)
-        If True then boundary pores are assumed at the edge of the image.
-        Skeleton with padding must have been used. This is being tested.
+        Optionally provide your own skeleton of the image. If sk is `None` we
+        compute the skeleton using `skimage.morphology.skeleton_3d`. This is
+        recommended to ensure that the skeleton does not have any shells and is
+        well suited for boundary pores. If however your own custom skeleton is
+        provided we check the skeleton for shells and throw a warning if shells
+        are detected in the skeleton.
+    padding : integer
+        The amount of padding to add to the image before determining the
+        skeleton. This helps determine boundary pores.
+    parallel : boolean
+        If `False` the skeleton is calculated in serial. This is the default
+        mode. However, if `True`, the skeleton is calculated in parallel using
+        dask. The default mode is `False`
+    numba : boolean
+        If `False` pure python is used in `insert_pore_bodies`. However, if set
+        to `True` numba is used to speed up the insertion of pores. We
+        recommend setting to `True` for large networks. The default mode is
+        `False`.
+    keep_boundary_pores : boolean
+        Boundary pores are sometimes removed when an adjacent interior pore
+        overlaps with a boundary pore. Set this argument to `True` to ensure
+        that all boundary pores are kept. However, this is computationally more
+        effort as it requires calculting the distance transform twice. For
+        faster computation, set this method to `False`. The default mode is
+        `True`.
     voxel_size : scalar (default = 1)
         The resolution of the image, expressed as the length of one side of a
         voxel, so the volume of a voxel would be voxel_size-cubed
     l_max : scalar (default = 7)
         The size of the maximum filter used in finding pores along long throats
+
     Returns
     -------
     net : dict
-        A dictionary containing all the pore and throat size data, as well as
-        the network topological information.  The dictionary names use the
-        OpenPNM convention (i.e. 'pore.coords', 'throat.conns').
+        A dictionary containing the most important pore and throat size data
+        and topological data. These are pore radius, throat radius, pore
+        coordinates, and throat connections. The dictionary names use the
+        OpenPNM convention (i.e. 'pore.coords', 'throat.conns', 'pore.radius',
+        'throat.radius'). Labels for boundary pores and overlapping thraots
+        are also returned.
     """
+    # get the skeleton
     if sk is None:
-        sk = ski.morphology.skeletonize_3d(im)/255
+        sk = skeleton(im, padding, parallel, **kwargs)
+    else:
+        _check_skeleton_health(sk)
     # find junction points
-    pt = find_junctions(sk)
+    pt = analyze_skeleton(sk)
     # distance transform
     dt = edt(im)
-    # prevent interior pores from overlapping boundary pores
-    if boundary_pores is True:
-        if im.ndim == 2:
-            error = find_dt_artifacts(dt[1:-1, 1:-1])
-        else:
-            error = find_dt_artifacts(dt[1:-1, 1:-1, 1:-1])
-        error = np.pad(error, 1, mode='constant', constant_values=0)
-        dt_error = dt - error
+    if keep_boundary_pores:  # ensure boundary pores are kept!
+        dt2 = edt(im, black_border=True)
+        mask = pt.endpts > 0
+        dt = dt2 * (~mask) + dt * pt.endpts
     # insert pores at junction points
-    fbd = find_pore_bodies(sk, dt_error, pt, l_max)
-    # find throat skeleton
-    ts = find_throat_skeleton(sk, pt, fbd)
+    fbd = insert_pore_bodies(sk, dt, pt, l_max, numba)
     # convert spheres to network dictionary
-    net = spheres_to_network(sk, dt, fbd, ts, voxel_size=voxel_size)
+    net = spheres_to_network(sk, dt, fbd, pt, voxel_size)
     return net
-    
 
-def find_junctions(sk):
+
+def analyze_skeleton(sk):
     r"""
-    find all the junctions in the skelton. It uses convolution to find voxels
+    Finds all the junction in a skeleton. It uses convolution to find voxels
     with extra neighbors, as well as terminal points on the ends of branches.
-    parameters
+
+    Parameters
     ------------
     sk : ndarray
         The skeleton of an image (boolean).
+
     Returns
     -------
     pt : Results object
@@ -102,13 +148,14 @@ def find_junctions(sk):
     return pt
 
 
-def find_pore_bodies(sk, dt, pt, l_max=7):
+def insert_pore_bodies(sk, dt, pt, l_max=7, numba=False):
     r"""
     Insert spheres at each junction point of the skeleton corresponding to
     the local size. A search for local maximums is performed along throats
     between inserted spheres. Additional spheres are inserted where any local
     maximums are found.
-    parameters
+
+    Parameters
     ------------
     sk : ndarray
         The skeleton of an image (boolean).
@@ -119,6 +166,11 @@ def find_pore_bodies(sk, dt, pt, l_max=7):
     l_max: int
         The length of the cubical structuring element to use in the maximum
         filter for inserting pores along long throats
+    numba : boolean
+        If `True` numba is used to speed up python for loops that are used for
+        inserting pore bodies. We recommend setting to `True` for large
+        images. The default mode is `False`.
+
     Returns
     -------
     fbd : Results object
@@ -136,56 +188,76 @@ def find_pore_bodies(sk, dt, pt, l_max=7):
     """
     mask = (pt.endpts * dt) >= 3  # remove endpoints with dt < 3
     pts = pt.juncs_r + pt.endpts * mask
-    c = np.vstack(np.where(pts)).T
+    c = np.vstack(np.where(pts)).astype('float64').T
     Ps = np.zeros_like(pts, dtype=int)
-    # initialize p_coords
-    p_coords = []
-    p_radius = []
     # Find number of dimensions
     ND = pts.ndim
     # insert spheres at junctions and endpoints
     d = np.insert(c, ND, dt[np.where(pts)].T, axis=1)
     d = np.flip(d[dt[np.where(pts)].T.argsort()], axis=0)
     d = np.delete(d, np.where(d[:, ND] == 0), axis=0)  # FIXME: temporary fix
-    # place n where there is a pore in the empty image Ps
-    for n, row in enumerate(d):
-        coords = tuple(row[0:ND])
-        if Ps[coords] == 0:
-            p_coords.append(coords)  # best to record p_coords here
-            p_radius.append(dt[coords])  # and p_radius here
-            _insert_disk_at_points(im=Ps,
-                                   coords=np.hstack(coords).reshape((ND, 1)),
-                                   r=round(dt[coords]),
-                                   v=n+1,
-                                   overwrite=True)
+    d = np.round(d).astype('int64')
+    # Speed up for loop using numba
+    if numba:
+        n = len(d) + 1
+        v = np.arange(1, n)
+        Ps, p_coords1 = _insert_disks_at_points_m(im=Ps,
+                                                  coords=d[:, 0:ND].T,
+                                                  radii=d[:, ND],
+                                                  v=v,
+                                                  overwrite=True)
+    # Pure python
+    if not numba:
+        p_coords = []
+        for n, row in enumerate(d):
+            coords = row[0:ND]
+            if Ps[tuple(coords)] == 0:
+                p_coords.append(coords)
+                ps.tools.insert_sphere(im=Ps,
+                                       c=coords,
+                                       r=row[ND],
+                                       v=n+1,
+                                       overwrite=True)
     # Find maximums on long throats
     temp = Ps * np.inf
     mask = np.isnan(temp)
     temp[mask] = 0
     temp = temp + dt * sk
     b = square(l_max) if ND == 2 else cube(l_max)
-    mx = (spim.maximum_filter(temp, footprint=b) == dt) * (~(Ps > 0)) * sk
-    # mx = reduce_peaks(mx)
+    mx = (spim.maximum_filter(temp, footprint=b) == dt) * sk
     # remove mx with dt < 3
     mask = (mx * dt) >= 3
     mx = mx * mask
     # insert spheres along long throats
-    c = np.vstack(np.where(mx)).T
-    Ps1_number = n
+    c = np.vstack(np.where(mx)).astype('float64').T
     # insert spheres at local maximums
     d = np.insert(c, ND, dt[np.where(mx)].T, axis=1)
     d = np.flip(d[d[:, ND].argsort()], axis=0)
-    for n, row in enumerate(d):
-        coords = tuple(row[0:ND])
-        if Ps[coords] == 0:
-            p_coords.append(coords)  # continue to record p_coords
-            p_radius.append(dt[coords])  # and p_radius here
-            ss = n + Ps1_number + 1
-            _insert_disk_at_points(im=Ps,
-                                   coords=np.hstack(coords).reshape((ND, 1)),
-                                   r=round(dt[coords]),
-                                   v=ss+1,
-                                   overwrite=False)
+    d = np.round(d).astype('int64')
+    # Speed up for loop using numba
+    if numba:
+        v = np.arange(n, n + len(d))
+        Ps, p_coords2 = _insert_disks_at_points_m(im=Ps,
+                                                  coords=d[:, 0:ND].T,
+                                                  radii=d[:, ND],
+                                                  v=v,
+                                                  overwrite=False)
+        p_coords = np.vstack((np.array(p_coords1), np.array(p_coords2)))
+    # Pure python
+    if not numba:
+        ss = n + 1
+        for n, row in enumerate(d):
+            coords = row[0:ND]
+            if Ps[tuple(coords)] == 0:
+                p_coords.append(coords)
+                ps.tools.insert_sphere(im=Ps,
+                                       c=coords,
+                                       r=row[ND],
+                                       v=ss+n+1,
+                                       overwrite=False)
+        p_coords = np.array(p_coords)
+    # retrieve radius
+    p_radius = np.array([dt[tuple(co)] for co in p_coords])
     # make pore numbers sequential
     Ps = make_contiguous(Ps)
     # second image for finding throat connections

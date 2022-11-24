@@ -83,9 +83,8 @@ from ._funcs import trim_floating_solid
 from ._funcs import trim_nonpercolating_paths
 from ._funcs import trim_small_clusters
 from ._magnet import magnet
-from ._magnet import find_junctions
-from ._magnet import find_pore_bodies
-from ._magnet import find_throat_skeleton
+from ._magnet import analyze_skeleton
+from ._magnet import insert_pore_bodies
 from ._magnet import reduce_peaks
 from ._magnet import spheres_to_network
 from ._magnet import skeleton_parallel
