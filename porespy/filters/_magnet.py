@@ -43,7 +43,8 @@ def magnet(im,
     Parameters
     ------------
     im : ndarray
-        An image of the porous material of interest
+        An image of the porous material of interest. It is not necessary to
+        trim floating solids beforehand as this is done automatically.
     sk : ndarray
         Optionally provide your own skeleton of the image. If sk is `None` we
         compute the skeleton using `skimage.morphology.skeleton_3d`. This is
@@ -88,8 +89,9 @@ def magnet(im,
     """
     # get the skeleton
     if sk is None:
-        sk = skeleton(im, padding, parallel, **kwargs)
+        sk, im = skeleton(im, padding, parallel, **kwargs)
     else:
+        im = trim_floating_solid(im, conn=6)
         _check_skeleton_health(sk)
     # find junction points
     pt = analyze_skeleton(sk)
@@ -476,7 +478,9 @@ def skeleton(im, padding=20, parallel=False, **kwargs):
     This helper function adds padding to an image before the skeleton is
     determined. This is useful for determining boundary pores in conjunction
     with MAGNET. This method uses `skimage.morphology.skeleton_3d` in either
-    serial or parallel.
+    serial or parallel. This function also ensures no shells in the final
+    skeleton by removing any floating solids in the original image. Not only is
+    the skeleton returned but also the image with floating solids removed.
 
     Parameters
     ----------
@@ -495,11 +499,13 @@ def skeleton(im, padding=20, parallel=False, **kwargs):
     -------
     sk : ndarray
         Skeleton of image
+    im : ndarray
+        The original image with floating solids removed
 
     """
     # trim floating solid
     if im.ndim == 3:
-        trim_floating_solid(im, conn=6)
+        im = trim_floating_solid(im, conn=6)
     # add pading
     padded = np.pad(im, padding, mode='edge')
     # perform skeleton
@@ -509,7 +515,7 @@ def skeleton(im, padding=20, parallel=False, **kwargs):
         sk = skeleton_parallel(padded, **kwargs)
     # remove padding
     sk = unpad(sk, pad_width=padding)
-    return sk
+    return sk, im
 
 
 def _check_skeleton_health(sk):
