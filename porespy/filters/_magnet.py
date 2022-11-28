@@ -242,7 +242,8 @@ def insert_pore_bodies(sk, dt, pt, l_max=7, numba=False):
                                                   radii=d[:, ND],
                                                   v=v,
                                                   overwrite=False)
-        p_coords = np.vstack((np.array(p_coords1), np.array(p_coords2)))
+        p_coords1.extend(p_coords2)
+        p_coords = np.array(p_coords1)
     # Pure python
     if not numba:
         ss = n + 1
