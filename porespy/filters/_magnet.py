@@ -353,7 +353,7 @@ def spheres_to_network(sk, dt, fbd, pt, voxel_size=1):
     pt1 = fbd.p_coords[P1]
     pt2 = fbd.p_coords[P2]
     dist = np.linalg.norm(pt1 - pt2, axis=1)
-    t_overlapping = dist <= R1 + R2
+    t_overlapping = dist <= R1 + R2  # FIXME: does not consider lens
     # set throat radius of overlapping pores
     Rs = np.hstack((R1.reshape((Nt, 1)), R2.reshape((Nt, 1))))
     Rmin = np.min(Rs, axis=1)
