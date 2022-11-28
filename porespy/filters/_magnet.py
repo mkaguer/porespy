@@ -89,13 +89,13 @@ def magnet(im,
     """
     # get the skeleton
     if sk is None:
-        sk, im = skeleton(im, padding, parallel, **kwargs)
+        sk = skeleton(im, padding, parallel, **kwargs)
     else:
-        im = trim_floating_solid(im, conn=6)
         _check_skeleton_health(sk)
     # find junction points
     pt = analyze_skeleton(sk)
     # distance transform
+    im = trim_floating_solid(im, conn=6)  # ensure floating solids are removed
     dt = edt(im)
     if keep_boundary_pores:  # ensure boundary pores are kept!
         dt2 = edt(im, black_border=True)
@@ -500,8 +500,6 @@ def skeleton(im, padding=20, parallel=False, **kwargs):
     -------
     sk : ndarray
         Skeleton of image
-    im : ndarray
-        The original image with floating solids removed
 
     """
     # trim floating solid
@@ -516,7 +514,7 @@ def skeleton(im, padding=20, parallel=False, **kwargs):
         sk = skeleton_parallel(padded, **kwargs)
     # remove padding
     sk = unpad(sk, pad_width=padding)
-    return sk, im
+    return sk
 
 
 def _check_skeleton_health(sk):
