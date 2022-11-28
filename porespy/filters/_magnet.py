@@ -459,7 +459,7 @@ def skeleton_parallel(im, divs, overlap=None, cores=None):
 
     """
     if overlap is None:
-        overlap = _estimate_overlap(im, mode='dt')
+        overlap = _estimate_overlap(im, mode='dt') * 2
     if cores is None:
         cores = settings.ncores
     depth = {}
