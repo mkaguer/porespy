@@ -509,7 +509,7 @@ def skeleton(im, padding=20, parallel=False, **kwargs):
     padded = np.pad(im, padding, mode='edge')
     # perform skeleton
     if parallel is False:  # serial
-        sk = ski.morphology.skeletonize_3d(padded)/255
+        sk = ski.morphology.skeletonize_3d(padded).astype('bool')
     if parallel is True:
         sk = skeleton_parallel(padded, **kwargs)
     # remove padding
