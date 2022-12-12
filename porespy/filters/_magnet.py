@@ -95,7 +95,8 @@ def magnet(im,
     # find junction points
     pt = analyze_skeleton(sk)
     # distance transform
-    im = trim_floating_solid(im, conn=6)  # ensure floating solids are removed
+    if im.ndim == 3:
+        im = trim_floating_solid(im, conn=6)  # ensure no floating solids
     dt = edt(im)
     if keep_boundary_pores:  # ensure boundary pores are kept!
         dt2 = edt(im, black_border=True)
