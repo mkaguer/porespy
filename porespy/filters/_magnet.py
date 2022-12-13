@@ -359,10 +359,10 @@ def spheres_to_network(sk, dt, fbd, pt, voxel_size=1):
     # set throat radius of overlapping pores
     Rs = np.hstack((R1.reshape((Nt, 1)), R2.reshape((Nt, 1))))
     Rmin = np.min(Rs, axis=1)
-    t_radius[t_overlapping] = 0.95 * Rmin[t_overlapping]
+    t_radius[t_overlapping] = Rmin[t_overlapping]
     # ensure throat radius is smaller than pore radii
     mask = Rmin <= t_radius
-    t_radius[mask] = 0.95 * Rmin[mask]
+    t_radius[mask] = Rmin[mask]
     # pore coords
     p_coords = fbd.p_coords.astype('float')
     if ND == 2:  # If 2D, add 0's in 3rd dimension
