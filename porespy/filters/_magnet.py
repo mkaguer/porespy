@@ -91,7 +91,7 @@ def magnet(im,
     if sk is None:
         sk = skeleton(im, padding, parallel, **kwargs)
     else:
-        _check_skeleton_health(sk)
+        _check_skeleton_health(sk)  # FIXME: This doesn't work on 2D
     # find junction points
     pt = analyze_skeleton(sk)
     # distance transform
@@ -191,7 +191,7 @@ def insert_pore_bodies(sk, dt, pt, l_max=7, numba=False):
         The radius of each sphere added
     """
     mask = (pt.endpts * dt) >= 3  # remove endpoints with dt < 3
-    pts = pt.juncs_r + pt.endpts * mask
+    pts = pt.juncs + pt.endpts * mask
     c = np.vstack(np.where(pts)).astype('float64').T
     Ps = np.zeros_like(pts, dtype=int)
     # Find number of dimensions
@@ -261,13 +261,14 @@ def insert_pore_bodies(sk, dt, pt, l_max=7, numba=False):
     Ps = make_contiguous(Ps)
     # second image for finding throat connections
     Ps2 = ((pts + mx) > 0) * Ps
-    f = square(4) if ND == 2 else cube(4)
-    Ps2 = spim.maximum_filter(Ps2, footprint=f)
+    # f = square(4) if ND == 2 else cube(4)
+    # Ps2 = spim.maximum_filter(Ps2, footprint=f)
     # results object
     fbd = Results()
     fbd.Ps = Ps
     fbd.Ps2 = Ps2
     fbd.mx = mx
+    fbd.pts = pts
     fbd.p_coords = p_coords
     fbd.p_radius = p_radius
     return fbd
@@ -310,8 +311,8 @@ def spheres_to_network(sk, dt, fbd, pt, voxel_size=1):
     shape = fbd.Ps.shape
     # identify throat segments
     mx = fbd.mx
-    pt = pt.juncs
-    throats = (~((pt + mx) > 0)) * sk
+    pts = fbd.pts
+    throats = (~((pts + mx) > 0)) * sk
     s = spim.generate_binary_structure(ND, ND)
     throats, num_throats = spim.label(throats, structure=s)
     slicess = spim.find_objects(throats)  # Nt by 2
@@ -556,7 +557,7 @@ if __name__ == "__main__":
     ps.visualization.set_mpl_style()
     np.random.seed(10)
 
-    twod = False
+    twod = True
     export = False
 
     # %% Generate a test image
