@@ -261,8 +261,6 @@ def insert_pore_bodies(sk, dt, pt, l_max=7, numba=False):
     Ps = make_contiguous(Ps)
     # second image for finding throat connections
     Ps2 = ((pts + mx) > 0) * Ps
-    # f = square(4) if ND == 2 else cube(4)
-    # Ps2 = spim.maximum_filter(Ps2, footprint=f)
     # results object
     fbd = Results()
     fbd.Ps = Ps
