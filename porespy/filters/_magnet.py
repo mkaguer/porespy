@@ -330,7 +330,7 @@ def spheres_to_network(sk, dt, fbd, pt, voxel_size=1):
         sub_dt = dt[ss]
         throat_im = sub_im_l == i+1
         # dilate throat_im to capture connecting pore indices
-        structure = spim.generate_binary_structure(ND, 2)
+        structure = spim.generate_binary_structure(ND, ND)
         im_w_throats_l = spim.binary_dilation(input=throat_im,
                                               structure=structure)
         im_w_throats_l = im_w_throats_l * sub_sk
