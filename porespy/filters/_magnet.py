@@ -190,8 +190,7 @@ def insert_pore_bodies(sk, dt, pt, l_max=7, numba=False):
         'p_radius'
         The radius of each sphere added
     """
-    mask = (pt.endpts * dt) >= 3  # remove endpoints with dt < 3
-    pts = pt.juncs + pt.endpts * mask
+    pts = pt.juncs + pt.endpts
     c = np.vstack(np.where(pts)).astype('float64').T
     Ps = np.zeros_like(pts, dtype=int)
     # Find number of dimensions
@@ -226,9 +225,6 @@ def insert_pore_bodies(sk, dt, pt, l_max=7, numba=False):
     temp = temp + dt * sk
     b = square(l_max) if ND == 2 else cube(l_max)
     mx = (spim.maximum_filter(temp, footprint=b) == dt) * sk
-    # remove mx with dt < 3
-    mask = (mx * dt) >= 3
-    mx = mx * mask
     # insert spheres along long throats
     c = np.vstack(np.where(mx)).astype('float64').T
     # insert spheres at local maximums
