@@ -23,6 +23,7 @@ def magnet(im,
            keep_boundary_pores=True,
            voxel_size=1,
            l_max=7,
+           boundary_width=0,
            **kwargs):
     r"""
     Perform a Medial Axis Guided Network ExtracTion (MAGNET) on an image of
@@ -76,6 +77,10 @@ def magnet(im,
         voxel, so the volume of a voxel would be voxel_size-cubed
     l_max : scalar (default = 7)
         The size of the maximum filter used in finding pores along long throats
+    boundary_width : integer (default = 0)
+        The number of voxels inward from the edge of the image which
+        constitutes the boundary. Pores centred within this boundary are
+        labelled as boundary pores. 
 
     Returns
     -------
@@ -98,14 +103,16 @@ def magnet(im,
     if im.ndim == 3:
         im = trim_floating_solid(im, conn=6)  # ensure no floating solids
     dt = edt(im)
-    if keep_boundary_pores:  # ensure boundary pores are kept!
+    if keep_boundary_pores:
         dt2 = edt(im, black_border=True)
-        mask = pt.endpts > 0
-        dt = dt2 * (~mask) + dt * pt.endpts
+        mask = np.zeros_like(im)
+        mask = unpad(mask, 1)
+        mask = np.pad(mask, pad_width=1, constant_values=1)
+        dt = dt2 + dt * mask
     # insert pores at junction points
     fbd = insert_pore_bodies(sk, dt, pt, l_max, numba)
     # convert spheres to network dictionary
-    net = spheres_to_network(sk, dt, fbd, pt, voxel_size)
+    net = spheres_to_network(sk, dt, fbd, pt, voxel_size, boundary_width)
     return net
 
 
@@ -222,9 +229,10 @@ def insert_pore_bodies(sk, dt, pt, l_max=7, numba=False):
     temp = Ps * np.inf
     mask = np.isnan(temp)
     temp[mask] = 0
-    temp = temp + dt * sk
+    dt2 = spim.gaussian_filter(dt, sigma=0.4)
+    temp = temp + dt2 * sk
     b = square(l_max) if ND == 2 else cube(l_max)
-    mx = (spim.maximum_filter(temp, footprint=b) == dt) * sk
+    mx = (spim.maximum_filter(temp, footprint=b) == dt2) * sk
     # insert spheres along long throats
     c = np.vstack(np.where(mx)).astype('float64').T
     # insert spheres at local maximums
@@ -268,7 +276,7 @@ def insert_pore_bodies(sk, dt, pt, l_max=7, numba=False):
     return fbd
 
 
-def spheres_to_network(sk, dt, fbd, pt, voxel_size=1):
+def spheres_to_network(sk, dt, fbd, pt, voxel_size=1, boundary_width=0):
     r"""
     Assemable a dictionary object containing essential topological and
     geometrical information. The skeleton and an image with spheres already
@@ -289,6 +297,10 @@ def spheres_to_network(sk, dt, fbd, pt, voxel_size=1):
     voxel_size : scalar (default = 1)
         The resolution of the image, expressed as the length of one side of a
         voxel, so the volume of a voxel would be **voxel_size**-cubed.
+    boundary_width : integer (default = 0)
+        The number of voxels inward from the edge of the image which
+        constitutes the boundary. Pores centred within this boundary are
+        labelled as boundary pores. 
 
     Returns
     -------
@@ -370,13 +382,14 @@ def spheres_to_network(sk, dt, fbd, pt, voxel_size=1):
     net['throat.radius'] = t_radius * voxel_size
     net['pore.radius'] = fbd.p_radius * voxel_size
     net['throat.overlapping'] = t_overlapping
-    net['pore.xmin'] = p_coords[:, 0] == 0
-    net['pore.xmax'] = p_coords[:, 0] == shape[0]-1
-    net['pore.ymin'] = p_coords[:, 1] == 0
-    net['pore.ymax'] = p_coords[:, 1] == shape[1]-1
+    bw = boundary_width * voxel_size
+    net['pore.xmin'] = p_coords[:, 0] <= 0 + bw
+    net['pore.xmax'] = p_coords[:, 0] >= shape[0] - 1 - bw
+    net['pore.ymin'] = p_coords[:, 1] <= 0 + bw
+    net['pore.ymax'] = p_coords[:, 1] >= shape[1] - 1 - bw
     if ND == 3:
-        net['pore.zmin'] = p_coords[:, 2] == 0
-        net['pore.zmax'] = p_coords[:, 2] == shape[2]-1
+        net['pore.zmin'] = p_coords[:, 2] <= 0 + bw
+        net['pore.zmax'] = p_coords[:, 2] >= shape[2] - 1 - bw
     return net
 
 
@@ -500,9 +513,9 @@ def skeleton(im, padding=20, parallel=False, **kwargs):
     """
     # trim floating solid
     if im.ndim == 3:
-        im = trim_floating_solid(im, conn=6)
+        im = trim_floating_solid(im, conn=6, surface=True)
     # add pading
-    padded = np.pad(im, padding, mode='edge')
+    padded = np.pad(im, padding, mode='reflect')
     # perform skeleton
     if parallel is False:  # serial
         sk = ski.morphology.skeletonize_3d(padded).astype('bool')
