@@ -101,7 +101,7 @@ def magnet(im,
     pt = analyze_skeleton(sk)
     # distance transform
     if im.ndim == 3:
-        im = trim_floating_solid(im, conn=6)  # ensure no floating solids
+        im = trim_floating_solid(im, conn=6, surface=True)  # ensure no floating solids
     dt = edt(im)
     if keep_boundary_pores:
         dt2 = edt(im, black_border=True)
