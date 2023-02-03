@@ -20,10 +20,9 @@ def magnet(im,
            padding=20,
            parallel=False,
            numba=False,
-           keep_boundary_pores=True,
            voxel_size=1,
            l_max=7,
-           boundary_width=0,
+           boundary_width=3,
            **kwargs):
     r"""
     Perform a Medial Axis Guided Network ExtracTion (MAGNET) on an image of
@@ -65,13 +64,6 @@ def magnet(im,
         to `True` numba is used to speed up the insertion of pores. We
         recommend setting to `True` for large networks. The default mode is
         `False`.
-    keep_boundary_pores : boolean
-        Boundary pores are sometimes removed when an adjacent interior pore
-        overlaps with a boundary pore. Set this argument to `True` to ensure
-        that all boundary pores are kept. However, this is computationally more
-        effort as it requires calculting the distance transform twice. For
-        faster computation, set this method to `False`. The default mode is
-        `True`.
     voxel_size : scalar (default = 1)
         The resolution of the image, expressed as the length of one side of a
         voxel, so the volume of a voxel would be voxel_size-cubed
@@ -103,12 +95,6 @@ def magnet(im,
     if im.ndim == 3:
         im = trim_floating_solid(im, conn=6, surface=True)  # ensure no floating solids
     dt = edt(im)
-    if keep_boundary_pores:
-        dt2 = edt(im, black_border=True)
-        mask = np.zeros_like(im)
-        mask = unpad(mask, 1)
-        mask = np.pad(mask, pad_width=1, constant_values=1)
-        dt = dt2 + dt * mask
     # insert pores at junction points
     fbd = insert_pore_bodies(sk, dt, pt, l_max, numba)
     # convert spheres to network dictionary
@@ -370,6 +356,14 @@ def spheres_to_network(sk, dt, fbd, pt, voxel_size=1, boundary_width=0):
     # ensure throat radius is smaller than pore radii
     mask = Rmin <= t_radius
     t_radius[mask] = 0.95 * Rmin[mask]
+    # sort AND remove smaller duplicate throat
+    d = np.insert(t_conns.astype('float'), 2, t_radius, axis=1)
+    d = np.insert(d, 3, t_overlapping.astype('float'), axis=1)
+    d = np.flip(d[t_radius.argsort()], axis=0)
+    t_conns = d[:, 0:2].astype('int')
+    t_conns, indices = np.unique(t_conns, axis=0, return_index=True)
+    t_radius = d[:, 2][indices]
+    t_overlapping = d[:, 3][indices].astype('bool')
     # pore coords
     p_coords = fbd.p_coords.astype('float')
     if ND == 2:  # If 2D, add 0's in 3rd dimension
@@ -650,7 +644,7 @@ if __name__ == "__main__":
 
     # %% Run Stokes Flow algorithm on extracted network
     # collection of geometry models, delete pore.diameter and pore.volume models
-    geo = op.models.collections.geometry.cubes_and_cuboids
+    geo = op.models.collections.geometry.spheres_and_cylinders
     del geo['pore.diameter'], geo['pore.volume'], geo['throat.diameter']
     # set pore.diameter
     net_m['pore.diameter'] = net_m['pore.diameter'].copy()
