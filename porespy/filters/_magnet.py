@@ -94,7 +94,8 @@ def magnet(im,
     # distance transform
     if im.ndim == 3:
         im = trim_floating_solid(im, conn=6, surface=True)  # ensure no floating solids
-    dt = edt(im)
+    b = square(3) if im.ndim == 2 else cube(3)
+    dt = spim.maximum_filter(edt(im), footprint=b)
     # insert pores at junction points
     fbd = insert_pore_bodies(sk, dt, pt, l_max, numba)
     # convert spheres to network dictionary
