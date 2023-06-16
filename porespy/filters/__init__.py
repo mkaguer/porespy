@@ -88,9 +88,12 @@ from ._funcs import trim_small_clusters
 from ._magnet import magnet
 from ._magnet import analyze_skeleton
 from ._magnet import insert_pore_bodies
-from ._magnet import reduce_peaks
 from ._magnet import spheres_to_network
+from ._magnet import skeleton
 from ._magnet import skeleton_parallel
+from ._magnet import padded_image
+from ._magnet import reduce_points
+from ._magnet import reduce_peaks
 from ._snows import snow_partitioning
 from ._snows import snow_partitioning_n
 from ._snows import snow_partitioning_parallel
