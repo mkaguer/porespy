@@ -285,35 +285,35 @@ def merge_nearby_pores(network, Lmax):
     Notes
     -----
     - This works even if the pores are not topologically connected
-    - The *new* pore takes on the average values of the ones that are being merged
+    - The *new* pore takes on the average values of the ones that are being merged,
+      including average coordinates, sizes etc.  Labels are all set to False.
     - Throats connected to the pores that are being merged are kept and rejoined
-      to the new pore, so keep all their original properties.  This includes length
-      which might change.
-    - This function is not optimized for speed
-    - If many pores are close together this might break.  It was written with
-      pairs of pores in mind.
+      to the *new* pore, so keep all their original properties. This includes length
+      which might change slightly.
     """
-    from openpnm.topotools import extend, trim
-    hits = network.find_nearby_pores(pores=network.Ps, r=Lmax, include_input=True)
-    Np = network.Np  # Store for later
-    sets = dict()
-    for i, row in enumerate(hits):
-        if len(row):
-            key = tuple(sorted(row.tolist() + [i]))
-            Ts =  network.find_neighbor_throats(pores=key, mode='xor')
-            sets[key] = Ts
-    for i, row in enumerate(sets.keys()):
-        crds = np.mean(network['pore.coords'][list(row)], axis=0)
+    from openpnm.topotools import extend, trim, bond_percolation
+    from openpnm.models.network import pore_to_pore_distance
+    L = pore_to_pore_distance(network)
+    clusters = bond_percolation(network, L <= Lmax)
+    labels = np.unique(clusters.site_labels)
+    labels = labels[labels >= 0]
+    cluster_num = {v: [] for v in labels}
+    for n, v in enumerate(clusters.site_labels):
+        cluster_num[v].append(n)
+    Np = network.Np
+    props = network.props(element='pore')
+    props.remove('pore.coords')
+    for i, Ps in enumerate(cluster_num.values()):
+        crds = np.mean(network['pore.coords'][Ps], axis=0)
         extend(network, pore_coords=[crds])
-        for prop in network.props(element='pore'):
-            if prop not in ['pore.coords']:
-                network[prop][-1] = np.mean(network[prop][list(row)])
-        Ts = sets[row]
+        for prop in props:
+            network[prop][-1] = np.mean(network[prop][Ps])
+        Ts = network.find_neighbor_throats(pores=Ps, mode='xor')
         conns = network.conns[Ts, :]
-        mask = np.isin(conns, row)
+        mask = np.isin(conns, Ps)
         conns[mask] = Np + i
         network['throat.conns'][Ts, :] = np.sort(conns, axis=1)
-    Ps = np.hstack(list(sets.keys()))
+    Ps = np.where(clusters.site_labels >= 0)[0]
     trim(network=network, pores=Ps)
     return network
 
