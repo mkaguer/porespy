@@ -6,11 +6,13 @@ import skimage as ski
 from edt import edt
 import dask.array as da
 from skimage.morphology import square, cube
+from porespy.generators import borders
 from porespy.tools import (
     make_contiguous,
     unpad,
     extract_subsection,
     ps_disk,
+    ps_round,
     extend_slice,
     insert_sphere,
     Results,
@@ -30,12 +32,14 @@ logger = logging.getLogger(__name__)
 __all__ = [
     'magnet',
     'reduce_points',
+    'merge_nearby_pores',
     'padded_image',
     'skeleton_parallel',
     'skeleton',
     'spheres_to_network',
     'insert_pore_bodies',
     'analyze_skeleton',
+    'prep_faces_for_skeletonization',
 ]
 
 
@@ -234,24 +238,25 @@ def insert_pore_bodies(sk, dt, pt, l_max=7, numba=False):
     mask = np.isnan(temp)
     temp[mask] = 0
     temp = temp + dt * sk
-    b = square(l_max) if ND == 2 else cube(l_max)
-    mx = (spim.maximum_filter(temp, footprint=b) == dt) * sk
-    # label and reduce maximum points
-    mx, _ = spim.label(mx, structure=s)
-    mx = reduce_points(mx, dt)
-    # remove any maximum points that lie on junction cluster!
-    mx[pts1 > 0] = 0
-    mx = make_contiguous(mx)  # make contiguous again
-    # find coords of mx points and sort
-    c = np.vstack(np.where(mx)).astype(int).T
-    c = np.insert(c, ND, mx[np.where(mx)].T, axis=1)
-    c = c[mx[np.where(mx)].T.argsort()]
-    # add mx coords to list of coords
-    p_coords = p_coords + list(c[:, 0:ND])
-    # assign index to mx
-    mx[mx > 0] += n + 1
-    # merge mx with junction/endpoints
-    pts1 = pts1 + mx
+    if l_max is not None:
+        b = square(l_max) if ND == 2 else cube(l_max)
+        mx = (spim.maximum_filter(temp, footprint=b) == dt) * sk
+        # label and reduce maximum points
+        mx, _ = spim.label(mx, structure=s)
+        mx = reduce_points(mx, dt)
+        # remove any maximum points that lie on junction cluster!
+        mx[pts1 > 0] = 0
+        mx = make_contiguous(mx)  # make contiguous again
+        # find coords of mx points and sort
+        c = np.vstack(np.where(mx)).astype(int).T
+        c = np.insert(c, ND, mx[np.where(mx)].T, axis=1)
+        c = c[mx[np.where(mx)].T.argsort()]
+        # add mx coords to list of coords
+        p_coords = p_coords + list(c[:, 0:ND])
+        # assign index to mx
+        mx[mx > 0] += n + 1
+        # merge mx with junction/endpoints
+        pts1 = pts1 + mx
     # results object
     fbd = Results()
     fbd.Ps = Ps
@@ -259,6 +264,84 @@ def insert_pore_bodies(sk, dt, pt, l_max=7, numba=False):
     fbd.p_coords = np.array(p_coords)
     fbd.p_radius = np.array([dt[tuple(co)] for co in p_coords])
     return fbd
+
+
+def _merge_nearby_pores(network, l_max):
+    from openpnm.topotools import merge_pores
+    hits = network.find_nearby_pores(pores=network.Ps, r=l_max, include_input=True)
+    sets = dict()
+    props = network.props(element='pore')
+    props.remove('pore.coords')
+    for i, row in enumerate(hits):
+        if len(row):
+            key = tuple(sorted(row.tolist() + [i]))
+            data = {p: network[p][list(key)] for p in props}
+            # data = [{p: network[p][list(key)]} for p in props]
+            sets[key] = data
+    pores = np.vstack(list(sets.keys()))
+    merge_pores(network=network, pores=pores)
+    data = list(sets.values())
+    for i, p in enumerate(network.pores('merged')):
+        for prop in props:
+            network[prop][p] = max(data[i][prop])
+    return network
+
+
+def merge_nearby_pores(network, Lmax):
+    from openpnm.topotools import merge_pores, extend, trim
+    hits = network.find_nearby_pores(pores=network.Ps, r=Lmax, include_input=True)
+    Np = network.Np  # Store for later
+    sets = dict()
+    for i, row in enumerate(hits):
+        if len(row):
+            key = tuple(sorted(row.tolist() + [i]))
+            Ts =  network.find_neighbor_throats(pores=key, mode='xor')
+            sets[key] = Ts
+    for i, row in enumerate(sets.keys()):
+        crds = np.mean(network['pore.coords'][list(row)], axis=0)
+        extend(network, pore_coords=[crds])
+        for prop in network.props(element='pore'):
+            if prop not in ['pore.coords']:
+                network[prop][-1] = np.mean(network[prop][list(row)])
+        Ts = sets[row]
+        conns = network.conns[Ts, :]
+        mask = np.isin(conns, row)
+        conns[mask] = Np + i
+        network['throat.conns'][Ts, :] = np.sort(conns, axis=1)
+    Ps = np.hstack(list(sets.keys()))
+    trim(network=network, pores=Ps)
+    return network
+
+
+def prep_faces_for_skeletonization(im, pad_width=5, r=3):
+    r"""
+    Pad faces of domain with solid with holes to force skeleton to edge of image
+
+    im : ndarray
+        The boolean image of the porous media with `True` value indicating the
+        void phase
+    pad_width : int or list
+        This is passed to the `numpy.pad` function so refer to that method for
+        details
+    r : int
+        The radius of the holes to create.
+
+    Returns
+    -------
+    im_padded : ndarray
+        A image with solid on all sides that has holes at the local peaks of the
+        distance transform.  Applying a skeletonization on this image will force
+        the skeleton to draw branches to the edge of the image.
+
+    """
+    dt = edt(im)
+    faces = borders(im.shape, mode='faces')
+    mx = im * faces * (spim.maximum_filter(dt*faces, size=3) == dt)
+    mx = np.pad(mx, pad_width, mode='edge')
+    mx = spim.binary_dilation(mx, structure=ps_round(r, im.ndim, False))
+    im_new = np.pad(im, pad_width, mode='constant', constant_values=False)
+    im_new = im_new + mx
+    return im_new
 
 
 def spheres_to_network(sk, dt, fbd, pt, voxel_size=1, boundary_width=3):
