@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     'magnet',
-    'reduce_peaks',
     'reduce_points',
     'padded_image',
     'skeleton_parallel',
