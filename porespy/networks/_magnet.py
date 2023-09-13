@@ -296,10 +296,11 @@ def merge_nearby_pores(network, Lmax):
     L = pore_to_pore_distance(network)
     clusters = bond_percolation(network, L <= Lmax)
     labels = np.unique(clusters.site_labels)
-    labels = labels[labels >= 0]
     cluster_num = {v: [] for v in labels}
     for n, v in enumerate(clusters.site_labels):
-        cluster_num[v].append(n)
+        if v >= 0:
+            cluster_num[v].append(n)
+    _ = cluster_num.pop(-1, None)
     Np = network.Np
     props = network.props(element='pore')
     props.remove('pore.coords')
@@ -322,12 +323,14 @@ def pad_faces_for_skeletonization(im, pad_width=5, r=3):
     r"""
     Pad faces of domain with solid with holes to force skeleton to edge of image
 
+    Parameters
+    ----------
     im : ndarray
         The boolean image of the porous media with `True` value indicating the
-        void phase
+        void phase.
     pad_width : int or list
         This is passed to the `numpy.pad` function so refer to that method for
-        details
+        details.
     r : int
         The radius of the holes to create.
 
