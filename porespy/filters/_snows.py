@@ -758,6 +758,51 @@ def relabel_chunks(im, chunk_shape):
     return im
 
 
+def reduce_peaks(peaks):
+    r"""
+    Any peaks that are broad or elongated are replaced with a single voxel
+    that is located at the center of mass of the original voxels.
+
+    Parameters
+    ----------
+    peaks : ndarray
+        An image containing ``True`` values indicating peaks in the
+        distance transform
+
+    Returns
+    -------
+    image : ndarray
+        An array with the same number of isolated peaks as the original
+        image, but fewer total ``True`` voxels.
+
+    Notes
+    -----
+    The center of mass of a group of voxels is used as the new single
+    voxel, so if the group has an odd shape (like a horse shoe), the new
+    voxel may *not* lie on top of the original set.
+
+    Examples
+    --------
+    `Click here
+    <https://porespy.org/examples/filters/reference/reduce_peaks.html>`_
+    to view online example.
+
+    """
+    if peaks.ndim == 2:
+        strel = square
+    else:
+        strel = cube
+    markers, N = spim.label(input=peaks, structure=strel(3))
+    inds = spim.measurements.center_of_mass(
+        input=peaks, labels=markers, index=np.arange(1, N + 1)
+    )
+    inds = np.floor(inds).astype(int)
+    # Centroid may not be on old pixel, so create a new peaks image
+    peaks_new = np.zeros_like(peaks, dtype=bool)
+    peaks_new[tuple(inds.T)] = True
+    return peaks_new
+
+
 def _trim_internal_slice(im, chunk_shape):
     r"""
     Delete extra slices from image that were used to stitch two or more
