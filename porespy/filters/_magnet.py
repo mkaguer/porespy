@@ -11,9 +11,23 @@ from porespy.tools import extend_slice, insert_sphere, Results
 from porespy import settings
 from porespy.filters import trim_floating_solid
 from porespy.filters._snows import _estimate_overlap
-from scipy.ndimage.measurements import maximum_position
+from scipy.ndimage import maximum_position
+
 
 logger = logging.getLogger(__name__)
+
+
+__all__ = [
+    'magnet',
+    'reduce_peaks',
+    'reduce_points',
+    'padded_image',
+    'skeleton_parallel',
+    'skeleton',
+    'spheres_to_network',
+    'insert_pore_bodies',
+    'analyze_skeleton',
+]
 
 
 def magnet(im,
@@ -49,7 +63,7 @@ def magnet(im,
         taking the skeleton. Floating solids are removed from the image by
         default prior to taking the skeleton.
     sk : ndarray
-        Optionally provide your own skeleton of the image. If sk is `None` the
+        Optionally provide your own skeleton of the image. If `sk` is `None` the
         skeleton is computed using `skimage.morphology.skeleton_3d`.  A check
         is made to ensure no shells are found in the resulting skeleton.
     endpoints : boolean
@@ -118,8 +132,10 @@ def magnet(im,
 
 def analyze_skeleton(sk):
     r"""
-    Finds all the junction in a skeleton. It uses convolution to find voxels
-    with extra neighbors, as well as terminal points on the ends of branches.
+    Finds all the junction and end points in a skeleton.
+
+    It uses convolution to find voxels with extra neighbors, as well as terminal
+    points on the ends of branches with fewer neighbors.
 
     Parameters
     ------------
