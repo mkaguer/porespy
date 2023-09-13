@@ -39,7 +39,7 @@ __all__ = [
     'spheres_to_network',
     'insert_pore_bodies',
     'analyze_skeleton',
-    'prep_faces_for_skeletonization',
+    'pad_faces_for_skeletonization',
 ]
 
 
@@ -266,29 +266,34 @@ def insert_pore_bodies(sk, dt, pt, l_max=7, numba=False):
     return fbd
 
 
-def _merge_nearby_pores(network, l_max):
-    from openpnm.topotools import merge_pores
-    hits = network.find_nearby_pores(pores=network.Ps, r=l_max, include_input=True)
-    sets = dict()
-    props = network.props(element='pore')
-    props.remove('pore.coords')
-    for i, row in enumerate(hits):
-        if len(row):
-            key = tuple(sorted(row.tolist() + [i]))
-            data = {p: network[p][list(key)] for p in props}
-            # data = [{p: network[p][list(key)]} for p in props]
-            sets[key] = data
-    pores = np.vstack(list(sets.keys()))
-    merge_pores(network=network, pores=pores)
-    data = list(sets.values())
-    for i, p in enumerate(network.pores('merged')):
-        for prop in props:
-            network[prop][p] = max(data[i][prop])
-    return network
-
-
 def merge_nearby_pores(network, Lmax):
-    from openpnm.topotools import merge_pores, extend, trim
+    r"""
+    Merges sets of pores that are within a given distance of each other
+
+    Parameters
+    ----------
+    network : dict
+        The OpenPNM network object
+    Lmax : scalar
+        Any pores within this distance of each other will be merged
+
+    Returns
+    -------
+    network : dict
+        The OpenPNM network with the pores merged
+
+    Notes
+    -----
+    - This works even if the pores are not topologically connected
+    - The *new* pore takes on the average values of the ones that are being merged
+    - Throats connected to the pores that are being merged are kept and rejoined
+      to the new pore, so keep all their original properties.  This includes length
+      which might change.
+    - This function is not optimized for speed
+    - If many pores are close together this might break.  It was written with
+      pairs of pores in mind.
+    """
+    from openpnm.topotools import extend, trim
     hits = network.find_nearby_pores(pores=network.Ps, r=Lmax, include_input=True)
     Np = network.Np  # Store for later
     sets = dict()
@@ -313,7 +318,7 @@ def merge_nearby_pores(network, Lmax):
     return network
 
 
-def prep_faces_for_skeletonization(im, pad_width=5, r=3):
+def pad_faces_for_skeletonization(im, pad_width=5, r=3):
     r"""
     Pad faces of domain with solid with holes to force skeleton to edge of image
 
