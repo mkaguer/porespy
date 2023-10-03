@@ -5,7 +5,7 @@ import scipy.signal as spsg
 import skimage as ski
 from edt import edt
 import dask.array as da
-from skimage.morphology import square, cube
+from skimage.morphology import square, cube, skeletonize, skeletonize_3d
 from porespy.generators import borders
 from porespy.tools import (
     make_contiguous,
@@ -20,7 +20,10 @@ from porespy.tools import (
     _make_ball,
 )
 from porespy import settings
-from porespy.filters import trim_floating_solid
+from porespy.filters import (
+    trim_floating_solid,
+    fill_blind_pores,
+)
 from porespy.filters._snows import _estimate_overlap
 from scipy.ndimage import maximum_position
 from numba import njit
@@ -40,6 +43,8 @@ __all__ = [
     'insert_pore_bodies',
     'analyze_skeleton',
     'pad_faces_for_skeletonization',
+    'skeletonize_magnet',
+    'find_throat_points',
 ]
 
 
