@@ -49,8 +49,11 @@ def draw_spheres(sites, sizes):
     Inserts spheres of variable size
     """
     coords = np.where(sites)
-    sizes = np.around(sizes, decimals=0).astype(int)
-    radii = sizes[coords]
+    if isinstance(sizes, (float, int)):
+        radii = (round(sizes)*np.ones_like(coords[0])).astype(int)
+    else:
+        sizes = np.around(sizes, decimals=0).astype(int)
+        radii = sizes[coords]
     spheres = np.zeros_like(sites)
     spheres = _insert_disks_at_points_parallel(
         im=spheres, coords=np.vstack(coords), radii=radii, v=True)
@@ -58,30 +61,50 @@ def draw_spheres(sites, sizes):
 
 
 im = ps.generators.blobs([400, 400], porosity=0.7, blobiness=3, seed=0)
-# im = ~ps.generators.random_spheres([400, 400], r=10, clearance=20, edges='extended')
-dt = np.around(edt(im), decimals=0).astype(int)
 # Obtain skeleton with proper handling of the boundaries
-sk2 = skeletonize_magnet(im)
+sk = skeletonize_magnet(im)
 # Extract junctions and endpoints from skeleton
-jct = analyze_skeleton(sk2)
-# Identify pieces of skeleton smaller than some threshold and call them junctions
-labels = spim.label(sk2*~jct.juncs, structure=ps.tools.ps_rect(3, im.ndim))[0]
-labels = region_size(labels + 1)  # Add 1 so void has label for next line
-jct.juncs += (labels <= 5)  # Void size will be huge so will not be found by <
-# Draw spheres at each junction point
-spheres = draw_spheres(sites=jct.endpts + jct.juncs, sizes=dt)
-# Draw slighly larger spheres to use as a mask below
-spheres1 = draw_spheres(sites=jct.endpts + jct.juncs, sizes=dt+2)
-# Find throat junctions, aided by removing skeleton from under dilated spheres
-jct.throats = find_throat_points(im=im, sk=sk2*~spheres, l_max=7)
-# Remove any throat junctions that are too close to pore bodies
-jct.throats = jct.throats*(~spheres1)
-# Draw spheres on each surviving throat junction
-spheres2 = draw_spheres(sites=jct.throats, sizes=dt)
-# Now merge the two sets of spheres and visulize
-temp = np.zeros_like(im, dtype=int)
-temp[jct.endpts] = 3
-temp[jct.juncs] = 4
-temp[jct.throats] = 5
+jct = analyze_skeleton(sk)
+# Identify pieces of skeleton smaller than threshold and merge junctions
+labels = spim.label(sk*~jct.juncs, structure=ps.tools.ps_rect(3, im.ndim))[0]
+sizes = region_size(labels + 1)  # Add 1 so void has label for next line
+jct.juncs += (sizes <= 5)  # Void size will be huge so will not be found by <= test
+# Dilate juctions and add endpoints
+juncs = draw_spheres(jct.juncs, sizes=2)
+juncs += jct.endpts
+# Label pore blobs (dilated junctions) and throats segments
+pores = spim.label(juncs)[0]
+throats = spim.label(sk*~jct.juncs, structure=ps.tools.ps_rect(3, im.ndim))[0]
+# Find overlap between pore blobs and throat segments
+joints = (throats > 0)*(pores > 0)
 fig, ax = plt.subplots()
-ax.imshow((spheres + spheres2*2.0)*(temp == 0)/im)
+ax.imshow((pores + throats)/im)
+
+# Extract conns array
+pts = np.where(joints)
+P1 = np.inf*np.ones(pts[0].size)
+P2 = -np.inf*np.ones(pts[0].size)
+np.minimum.at(P1, throats[pts], pores[pts])
+np.maximum.at(P2, throats[pts], pores[pts])
+mask = np.isfinite(P1) * np.isfinite(P2)
+conns = np.vstack((P1[mask], P2[mask])).T.astype(int)  # Need to -1 eventually
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
