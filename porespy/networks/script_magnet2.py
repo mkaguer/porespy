@@ -57,15 +57,17 @@ def draw_spheres(sites, sizes):
 def find_throat_junctions(im, pores, throats, dt=None):
     if dt is None:
         dt = edt(im)
+    strel = ps.tools.ps_rect(3, ndim=im.ndim)
     new_pores = np.zeros_like(pores, dtype=bool)
     slices = spim.find_objects(throats)
     for i, s in enumerate(slices):
-        im_sub = throats[s] == (i + 1)
+        sx = ps.tools.extend_slice(s, im.shape, pad=1)
+        im_sub = throats[sx] == (i + 1)
         # Get starting point for fmm as pore with highest index number
-        tmp = pores[s]*im_sub
-        start = np.where(tmp == tmp.max())
         # fmm requires full connectivity so must dilate im_sub
-        phi = spim.binary_dilation(im_sub)
+        phi = spim.binary_dilation(im_sub, structure=strel)
+        tmp = pores[sx]*phi
+        start = np.where(tmp == tmp.max())
         # Convert to masked array to confine fmm to throat segment
         phi = np.ma.array(phi, mask=phi == 0)
         phi[start] = 0
@@ -73,28 +75,32 @@ def find_throat_junctions(im, pores, throats, dt=None):
         # Obtain indices into segment
         ind = np.argsort(dist[im_sub])
         # Analyze dt profile to find significant peaks
-        line_profile = (im_sub*dt[s])[im_sub][ind]  # Mind F#$&
+        line_profile = dt[sx][im_sub][ind]
         pk = spsg.find_peaks(line_profile, prominence=1, distance=line_profile.min())
         # Add peak(s) to new_pores image
         hits = dist[im_sub][ind][pk[0]]
         for d in hits:
-            new_pores[s] += (dist == d)
+            new_pores[sx] += (dist == d)
     return new_pores
 
 
 def sk_to_pores_and_throats(sk, juncs, ends=None, t=5):
     strel = ps.tools.ps_rect(3, im.ndim)
     labels = spim.label(sk*~juncs, structure=strel)[0]
-    sizes = region_size(labels + 1)  # Add 1 so void has label for next line
-    juncs += (sizes <= t)  # Void size will be huge so will not be found by <= test
+    sizes = region_size(labels)
+    juncs += (sizes <= t)*(labels > 0)
     throats = spim.label(sk*~juncs, structure=strel)[0]
-    juncs_dil = draw_spheres(juncs > 0, sizes=2)
-    tmp = juncs_dil + ends if ends is not None else juncs_dil
+    # juncs_dil = draw_spheres(juncs > 0, sizes=2)
+    # tmp = juncs_dil + ends if ends is not None else juncs_dil
+    tmp = juncs + ends if ends is not None else juncs
     pores = spim.label(tmp, structure=strel)[0]
     return pores, throats
 
 
-def find_conns(pores, throats):
+def sk_to_network(pores, throats, dt):
+    # Find conns
+    dil = draw_spheres(pores > 0, 2)
+    pores = ps.filters.flood_func(pores, np.amax, spim.label(dil)[0]).astype(int)
     joints = (throats > 0)*(pores > 0)
     pts = np.where(joints)
     P1 = np.inf*np.ones(pts[0].size)
@@ -102,22 +108,52 @@ def find_conns(pores, throats):
     np.minimum.at(P1, throats[pts], pores[pts])
     np.maximum.at(P2, throats[pts], pores[pts])
     mask = np.isfinite(P1) * np.isfinite(P2)
-    conns = np.vstack((P1[mask], P2[mask])).T.astype(int)  # Need to -1 eventually
-    return conns
-
-
-def find_coords(pores, dt):
-    radii = -np.ones(pores.max())
+    conns = np.vstack((P1[mask], P2[mask])).T.astype(int) - 1
+    Tradii = -np.ones(conns.shape[0])
+    slices = spim.find_objects(throats)
+    for i, s in enumerate(slices):
+        im_sub = throats[s] == (i + 1)
+        Rs = dt[s][im_sub]
+        # Tradii[i] = np.median(Rs)
+        Tradii[i] = np.amin(Rs)
+    # Now do pores
+    Pradii = -np.ones(pores.max())
     index = -np.ones(pores.max(), dtype=int)
     im_ind = np.arange(0, im.size).reshape(im.shape)
     slices = spim.find_objects(pores)
     for i, s in enumerate(slices):
-        radii[i] = dt[s].max()
-        index[i] = im_ind[s][dt[s] == radii[i]][0]
+        Pradii[i] = dt[s].max()
+        index[i] = im_ind[s][dt[s] == Pradii[i]][0]
     coords = np.vstack(np.unravel_index(index, im.shape)).T
     if dt.ndim == 2:
         coords = np.vstack((coords[:, 0], coords[:, 1], np.zeros_like(coords[:, 0]))).T
-    return coords, radii
+    d = {}
+    d['pore.coords'] = coords
+    d['throat.conns'] = conns
+    d['throat.diameter'] = 2*Tradii
+    d['pore.diameter'] = 2*Pradii
+    return d
+
+
+def remove_overlapping_pores(pores, dt):
+    slices = spim.find_objects(pores)
+    s = [(dt[slices[i]]*(pores[slices[i]] == (i + 1))).max() for i in range(len(slices))]
+    ind = np.argsort(s)
+    pores2 = np.copy(pores)
+    for i in ind:
+        if np.any(pores[slices[i]] == (i + 1)):
+            coords = np.where(pores == (i + 1))
+            radii = (round(s[i])*np.ones_like(coords[0])).astype(int)
+            pores = _insert_disks_at_points_parallel(
+                im=pores, coords=np.vstack(coords), radii=radii, v=(i+1), overwrite=True)
+            pores[coords] += (i + 1)
+    pores = (pores2 > 0)*pores
+    return pores
+
+
+
+
+
 
 
 # %%
@@ -128,22 +164,23 @@ juncs, ends = analyze_skeleton(sk)
 pores, throats = sk_to_pores_and_throats(sk, juncs, ends)
 new_juncs = find_throat_junctions(im=im, pores=pores, throats=throats, dt=dt)
 pores, throats = sk_to_pores_and_throats(sk, juncs + new_juncs, ends)
-conns = find_conns(pores, throats)
-coords, radii = find_coords(pores, dt)
+net = sk_to_network(pores, throats, dt)
 
 # %%
 import openpnm as op
 pn = op.network.Network()
-pn['pore.coords'] = coords
-pn['throat.conns'] = conns - 1
-pn['pore.diameter'] = radii*2
-h = op.visualization.plot_connections(pn, color_by=pn.Ts, linewidth=5, cmap=cm)
-Ps = pn.num_neighbors(pn.Ps) <= 2
-h = op.visualization.plot_coordinates(pn, size_by=pn['pore.diameter']**2, color='none', linewidth=3, edgecolor='k', markersize=1500, ax=h, zorder=2)
+pn.update(net)
+# merge_overlapping_pores(pn)
+
+# %%
+h = op.visualization.plot_connections(pn, size_by=pn['throat.diameter'], color_by=pn.Ts, linewidth=50, cmap=cm)
+h = op.visualization.plot_coordinates(pn, size_by=pn['pore.diameter']**2, color_by=pn['pore.diameter'], alpha=0.85, linewidth=3, edgecolor='k', markersize=8000, ax=h, zorder=2)
 fig, ax = plt.gcf(), plt.gca()
 throats_temp = throats * (pores == 0)
 ax.imshow(((pores + throats_temp)/im).T, cmap=cm, vmin=0.01, interpolation='none')
 # ax.imshow(((sk*dt)/im).T, cmap=cm, vmin=0.01, interpolation='none')
+fig.set_size_inches([12, 12])
+# plt.savefig('magnet_with_throats.png', bbox_inches='tight')
 
 
 
