@@ -138,7 +138,7 @@ def sk_to_network(pores, throats, dt):
 def remove_overlapping_pores(pores, dt):
     slices = spim.find_objects(pores)
     s = [(dt[slices[i]]*(pores[slices[i]] == (i + 1))).max() for i in range(len(slices))]
-    ind = np.argsort(s)
+    ind = np.argsort(s)[::-1]
     pores2 = np.copy(pores)
     for i in ind:
         if np.any(pores[slices[i]] == (i + 1)):
@@ -165,6 +165,10 @@ pores, throats = sk_to_pores_and_throats(sk, juncs, ends)
 new_juncs = find_throat_junctions(im=im, pores=pores, throats=throats, dt=dt)
 pores, throats = sk_to_pores_and_throats(sk, juncs + new_juncs, ends)
 net = sk_to_network(pores, throats, dt)
+
+# %%
+# p2 = remove_overlapping_pores(pores, dt)
+# plt.imshow(p2/im)
 
 # %%
 import openpnm as op
