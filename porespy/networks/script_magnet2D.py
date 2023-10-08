@@ -2,13 +2,17 @@ import porespy as ps
 import numpy as np
 import scipy.ndimage as spim
 import matplotlib.pyplot as plt
+import scipy.signal as spsg
 from edt import edt
-from skimage.morphology import skeletonize, skeletonize_3d
+from skimage.morphology import skeletonize_3d
+from copy import copy
+from skfmm import distance
 from porespy.tools import (
     _insert_disks_at_points_parallel,
-    unpad,
-    Results,
     extract_subsection,
+    extend_slice,
+    ps_rect,
+    ps_round,
 )
 from porespy.filters import (
     region_size,
@@ -16,26 +20,11 @@ from porespy.filters import (
     trim_floating_solid,
     flood_func,
 )
-from skimage.morphology import square, cube
-import scipy.signal as spsg
-from copy import copy
-from skfmm import distance
+from _magnet import analyze_skeleton
 
 
 cm = copy(plt.cm.turbo)
 cm.set_under('darkgrey')
-
-
-def analyze_skeleton(sk):
-    a = square(3) if sk.ndim == 2 else cube(3)
-    conv = spsg.convolve(sk*1.0, a, mode='same', method='auto')
-    conv = np.rint(conv).astype(int)  # in case of fft, accuracy is lost
-    juncs = (conv >= 4) * sk
-    endpts = (conv == 2) * sk
-    pt = Results()
-    pt.juncs = juncs
-    pt.endpts = endpts
-    return pt
 
 
 def skeletonize_magnet2(im):
@@ -71,8 +60,9 @@ def skeletonize_magnet2(im):
         # This is needed for later since numpy is getting harder and harder to
         # deal with using indexing
         inds = np.arange(im2.size).reshape(im2.shape)
-        strel = ps.tools.ps_rect(w=5, ndim=2)  # This defines the hole size
-        # Extract skeleton of each face and put holes on outer layer of im2
+        strel = ps_rect(w=5, ndim=2)  # This defines the hole size
+        # Extract skeleton of each face, find junctions, and put holes on outer
+        # layer of im2 at each one
         for face in [(0, 1), (0, im2.shape[0]),
                      (1, 1), (1, im2.shape[1]),
                      (2, 1), (2, im2.shape[2])]:
@@ -104,32 +94,6 @@ def skeletonize_magnet2(im):
         return sk
 
 
-def variable_dilation(sites):
-    r"""
-    Dilates the nonzero voxels a specified amount with a round structuring element
-
-    Parameters
-    ----------
-    sites : ndarray
-        An ndarray with nonzero values indicating the locations to dilate. The
-        values of the nonzeros dictate the radius of the disk/sphere to insert.
-        The values will be rounded to the nearest integer.
-
-    Returns
-    -------
-    dilation : ndarray
-        An ndarray the same shape as `sites` with disk/spheres inserted at each
-        nonzero location
-    """
-    sites = np.around(sites, decimals=0).astype(int)
-    coords = np.where(sites > 0)
-    radii = sites[coords]
-    spheres = np.zeros_like(sites, dtype=bool)
-    spheres = _insert_disks_at_points_parallel(
-        im=spheres, coords=np.vstack(coords), radii=radii, v=True)
-    return spheres
-
-
 def find_throat_junctions(im, pores, throats, dt=None):
     r"""
     Finds local peaks on the throat segments of a skeleton large enough to be
@@ -156,14 +120,14 @@ def find_throat_junctions(im, pores, throats, dt=None):
 
     Returns
     -------
-    jcts : ndarray
+    juncs : ndarray
         A boolean array with `True` values indicating voxels on the `throat`
         segments which are actually junctions.
     """
     # Parse input args
     if dt is None:
         dt = edt(im)
-    strel = ps.tools.ps_rect(3, ndim=pores.ndim)
+    strel = ps_rect(3, ndim=pores.ndim)
     if pores.dtype == bool:
         pores = spim.label(pores > 0, structure=strel)[0]
     if throats.dtype == bool:
@@ -171,7 +135,7 @@ def find_throat_junctions(im, pores, throats, dt=None):
     new_pores = np.zeros_like(pores, dtype=bool)
     slices = spim.find_objects(throats)
     for i, s in enumerate(slices):
-        sx = ps.tools.extend_slice(s, pores.shape, pad=1)
+        sx = extend_slice(s, pores.shape, pad=1)
         im_sub = throats[sx] == (i + 1)
         # Get starting point for fmm as pore with highest index number
         # fmm requires full connectivity so must dilate im_sub
@@ -191,8 +155,6 @@ def find_throat_junctions(im, pores, throats, dt=None):
         hits = dist[im_sub][ind][pk[0]]
         for d in hits:
             new_pores[sx] += (dist == d)
-    # new_pores = spim.label(new_pores > 0, structure=strel)[0]
-    # new_pores = (new_pores + pores.max())*(new_pores > 0)
     return new_pores
 
 
@@ -213,10 +175,10 @@ def partition_skeleton(sk, juncs, dt):
     Returns
     -------
     results : dataclass
-        A `Results` object is returned with images of `pores` and `throats` each
-        containing the labelled clusters of connected voxels.
+        A `Results` object with images of `pores` and `throats` each containing
+        the labelled clusters of connected voxels.
     """
-    strel = ps.tools.ps_rect(3, sk.ndim)
+    strel = ps_rect(3, sk.ndim)
     labels = spim.label(sk*~juncs, structure=strel)[0]
     sizes = region_size(labels)
     # Add voxels from skeleton to junctions if they are too close to each other
@@ -228,7 +190,7 @@ def partition_skeleton(sk, juncs, dt):
         # diagonally oriented or windy segements.
         dists = flood_func(dt, np.amin, labels=labels) / (sk.ndim)**0.5
         juncs += (sizes <= dists)*(labels > 0)
-    # Label survising pieces of skeleton as throats
+    # Label the surviving pieces of skeleton as throats
     throats = spim.label(sk*~juncs, structure=strel)[0]
     pores = spim.label(juncs, structure=strel)[0]
     return pores, throats
@@ -236,7 +198,7 @@ def partition_skeleton(sk, juncs, dt):
 
 def sk_to_network(pores, throats, dt):
     # Find conns
-    dil = variable_dilation(2*(pores > 0))
+    dil = spim.binary_dilation(pores > 0, structure=ps_rect(w=3, ndim=im.ndim))
     pores = ps.filters.flood_func(pores, np.amax, spim.label(dil)[0]).astype(int)
     joints = (throats > 0)*(pores > 0)
     pts = np.where(joints)
@@ -263,18 +225,14 @@ def sk_to_network(pores, throats, dt):
         index[i] = im_ind[s][dt[s] == Pradii[i]][0]
     coords = np.vstack(np.unravel_index(index, im.shape)).T
     if dt.ndim == 2:
-        coords = np.vstack((coords[:, 0], coords[:, 1], np.zeros_like(coords[:, 0]))).T
+        coords = np.vstack(
+            (coords[:, 0], coords[:, 1], np.zeros_like(coords[:, 0]))).T
     d = {}
     d['pore.coords'] = coords
     d['throat.conns'] = conns
     d['throat.diameter'] = 2*Tradii
     d['pore.diameter'] = 2*Pradii
     return d
-
-
-
-
-
 
 
 # %%
@@ -287,23 +245,34 @@ new_juncs = find_throat_junctions(im=im, pores=pores, throats=throats, dt=dt)
 pores, throats = partition_skeleton(sk, juncs + new_juncs + ends, dt=dt)
 net = sk_to_network(pores, throats, dt)
 
-# %%
-# p2 = remove_overlapping_pores(pores, dt)
-# plt.imshow(p2/im)
 
 # %%
 import openpnm as op
 pn = op.network.Network()
 pn.update(net)
-# merge_overlapping_pores(pn)
+
 
 # %%
-h = op.visualization.plot_connections(pn, size_by=pn['throat.diameter'], color_by=pn.Ts, linewidth=50, cmap=cm)
-h = op.visualization.plot_coordinates(pn, size_by=pn['pore.diameter']**2, color_by=pn['pore.diameter'], alpha=0.85, linewidth=3, edgecolor='k', markersize=8000, ax=h, zorder=2)
+h = op.visualization.plot_connections(
+    network=pn,
+    size_by=pn['throat.diameter'],
+    color_by=pn.Ts,
+    linewidth=50,
+    cmap=cm,
+)
+h = op.visualization.plot_coordinates(
+    network=pn,
+    size_by=pn['pore.diameter']**2,
+    color_by=pn['pore.diameter'],
+    alpha=0.85,
+    linewidth=3,
+    edgecolor='k',
+    markersize=8000,
+    ax=h,
+    zorder=2,
+)
 fig, ax = plt.gcf(), plt.gca()
-throats_temp = throats * (pores == 0)
 ax.imshow(((pores + throats)/im).T, cmap=cm, vmin=0.01, interpolation='none')
-# ax.imshow(((sk*dt)/im).T, cmap=cm, vmin=0.01, interpolation='none')
 fig.set_size_inches([12, 12])
 # plt.savefig('magnet_with_throats.png', bbox_inches='tight')
 

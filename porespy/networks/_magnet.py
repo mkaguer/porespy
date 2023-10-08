@@ -43,8 +43,6 @@ __all__ = [
     'insert_pore_bodies',
     'analyze_skeleton',
     'pad_faces_for_skeletonization',
-    'skeletonize_magnet',
-    'find_throat_points',
 ]
 
 
@@ -60,7 +58,9 @@ def magnet(im,
            **kwargs):
     r"""
     Perform a Medial Axis Guided Network ExtracTion (MAGNET) on an image of
-    porous media. This is a modernized python implementation of a classical
+    porous media.
+
+    This is a modernized python implementation of a classical
     network extraction method. First, the skeleton of the provided image is
     determined. The skeleton can be computed in serial or parallel modes and
     padding can be optionally added to the image prior to taking the skeleton
