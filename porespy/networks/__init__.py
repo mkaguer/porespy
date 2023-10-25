@@ -29,3 +29,4 @@ from ._getnet import *
 from ._snow2 import *
 from ._utils import *
 from ._size_factors import *
+from ._magnet import *

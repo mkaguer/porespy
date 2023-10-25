@@ -38,17 +38,21 @@ for i, name in enumerate(names):
     im = imb
     porosity.append(np.sum(im)/np.product(im.shape)*100)
     print(f'porosity: {np.sum(im)/np.product(im.shape)*100}')
-    
+
     # get skeleton
     sk = ps.networks.skeletonize_magnet2(im)
+    labels, N = spim.label(sk, structure=ps.tools.ps_rect(3, 3))
 
     # MAGNET
-    net, sk = ps.networks.magnet(im,
-                                 padding=padding,
-                                 endpoints=endpoints,
-                                 voxel_size=res, 
-                                 l_max=l_max,
-                                 boundary_width=bw)
+    net, sk = ps.networks.magnet(
+        im=im,
+        sk=sk,
+        padding=padding,
+        endpoints=endpoints,
+        voxel_size=res,
+        l_max=l_max,
+        boundary_width=bw,
+    )
 
     # import network to openpnm
     net = op.io.network_from_porespy(net)
