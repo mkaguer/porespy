@@ -31,6 +31,7 @@ for i, name in enumerate(names):
     imb = (raw.reshape(shape, shape, shape))
     imb = imb == 0
     # imb = imb[:100, :100, :100]
+    imb = ps.generators.blobs([400, 400, 400], porosity=0.2, blobiness=3, seed=0)
     if fill_blind_pores:
         imb = ps.filters.fill_blind_pores(imb, conn=6, surface=True)
     imb = ps.filters.trim_floating_solid(imb, conn=6, surface=True)
@@ -46,7 +47,7 @@ for i, name in enumerate(names):
     # MAGNET
     net, sk = ps.networks.magnet(
         im=im,
-        sk=sk,
+        sk=None,
         padding=padding,
         endpoints=endpoints,
         voxel_size=res,

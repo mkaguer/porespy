@@ -61,17 +61,17 @@ def sk_to_network2(pores, throats, dt):
 
 # %%
 
-name = 'Berea'
-resolution = 5.35e-6
-Kx, Ky, Kz, Kavg = [], [], [], []
-raw = np.fromfile(name + '.raw', dtype=np.uint8)
-shape = np.ceil(len(raw)**(1/3)).astype('int')
-imb = (raw.reshape(shape, shape, shape))
-imb = imb == 0
-imb = ps.filters.fill_blind_pores(imb, conn=6, surface=True)
-im = ps.filters.trim_floating_solid(imb, conn=6, surface=True)
+# name = 'Berea'
+# resolution = 5.35e-6
+# Kx, Ky, Kz, Kavg = [], [], [], []
+# raw = np.fromfile(name + '.raw', dtype=np.uint8)
+# shape = np.ceil(len(raw)**(1/3)).astype('int')
+# imb = (raw.reshape(shape, shape, shape))
+# imb = imb == 0
+# imb = ps.filters.fill_blind_pores(imb, conn=6, surface=True)
+# im = ps.filters.trim_floating_solid(imb, conn=6, surface=True)
 
-# im = ps.generators.blobs([300, 300, 300], porosity=0.7, blobiness=2, seed=0)
+im = ps.generators.blobs([300, 300, 300], porosity=0.7, blobiness=2, seed=0)
 dt = edt(im)
 sk = skeletonize_magnet2(im)
 juncs, ends = analyze_skeleton(sk)
