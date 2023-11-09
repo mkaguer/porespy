@@ -52,6 +52,7 @@ __all__ = [
     'partition_skeleton',
     'find_throat_junctions',
     'skeletonize_magnet2',
+    '_check_skeleton_health',
 ]
 
 
@@ -197,7 +198,7 @@ def analyze_skeleton(sk):
     return pt
 
 
-def insert_pore_bodies(sk, dt, pt, l_max=7, numba=False):
+def insert_pore_bodies(sk, dt, pt, l_max=None, numba=False):
     r"""
     Insert spheres at each junction and/or terminal points of the skeleton
     corresponding to the local size. A search for local maximums is performed
@@ -215,7 +216,8 @@ def insert_pore_bodies(sk, dt, pt, l_max=7, numba=False):
         pores.
     l_max: int
         The length of the cubical structuring element to use in the maximum
-        filter for inserting pores along long throats
+        filter for inserting pores along long throats. If `None` is given
+        then "throat" nodes are ignored.
 
     Returns
     -------
@@ -797,6 +799,7 @@ def skeletonize_magnet2(im):
         return sk
     else:
         shape = np.array(im.shape)  # Save for later
+        dt3D = edt(im)
         # Tidy-up image so skeleton is clean
         im2 = fill_blind_pores(im, conn=26, surface=True)
         im2 = trim_floating_solid(im2, conn=6)
@@ -817,19 +820,13 @@ def skeletonize_magnet2(im):
                     s.append(slice(face[1]-1, face[1]))
                 else:
                     s.append(slice(0, im2.shape[ax]))
-            imtmp = im2[tuple(s)].squeeze()  # Extract 2D face
-            sk2d = skeletonize_3d(imtmp) > 0  # Skeletonize it
-            juncs, ends = analyze_skeleton(sk2d)  # Extract juncs and ends
-            # This function merges junctions, defines throats, and labels them
-            dt = edt(imtmp)
-            pores, throats = partition_skeleton(sk2d, juncs + ends, dt)
-            # This is a new function for finding 'throat nodes'
-            new_juncs = find_throat_junctions(
-                im=imtmp, pores=pores, throats=throats, dt=dt)
-            # Dilate junctions and endpoints to create larger 'thru-holes'
-            juncs_dil = spim.binary_dilation((pores > 0) + new_juncs, strel)
+            im_face = im[tuple(s)].squeeze()
+            dt = spim.gaussian_filter(dt3D[tuple(s)].squeeze(), sigma=0.4)
+            peaks = im_face*(spim.maximum_filter(dt, size=5) == dt)
+            # # Dilate junctions and endpoints to create larger 'thru-holes'
+            # juncs_dil = spim.binary_dilation(peaks, strel)
             # Insert image of holes onto corresponding face of im2
-            np.put(im2, inds[tuple(s)].flatten(), juncs_dil.flatten())
+            np.put(im2, inds[tuple(s)].flatten(), peaks.flatten())
         # Extend the faces to convert holes into tunnels
         im2 = np.pad(im2, 20, mode='edge')
         # Perform skeletonization
@@ -865,9 +862,19 @@ def find_throat_junctions(im, pores, throats, dt=None):
 
     Returns
     -------
-    juncs : ndarray
-        A boolean array with `True` values indicating voxels on the `throat`
-        segments which are actually junctions.
+    results : dataclass
+        A dataclass-like object with the following named attributes:
+
+        =============== =============================================================
+        Atribute        Description
+        =============== =============================================================
+        new_pores       The newly identified pores on long throat segments. These
+                        are labelled starting from the 1+ the maximum in `pores`
+        pores           The original pore image with labels applied (if original
+                        `pores` image was given as a `bool` array.
+        new_throats     The new throat segments after dividing them at the newly
+                        found pore locations.
+        =============== =============================================================
     """
     # Parse input args
     if dt is None:
@@ -904,7 +911,16 @@ def find_throat_junctions(im, pores, throats, dt=None):
         hits = dist[im_sub][ind][pk[0]]
         for d in hits:
             new_pores[sx] += (dist == d)
-    return new_pores
+    # Remove peaks from original throat image and re-label
+    new_throats = spim.label(throats*(new_pores == 0), structure=strel)[0]
+    # Label new pores, incremented by labels in original pores
+    new_pores = spim.label(new_pores, structure=strel)[0]
+    new_pores[new_pores > 0] += pores.max()
+    results = Results()
+    results.new_pores = new_pores
+    results.pores = pores
+    results.new_throats = new_throats
+    return results
 
 
 def partition_skeleton(sk, juncs, dt):
@@ -967,12 +983,12 @@ def sk_to_network(pores, throats, dt):
     # Now do pores
     Pradii = -np.ones(pores.max())
     index = -np.ones(pores.max(), dtype=int)
-    im_ind = np.arange(0, im.size).reshape(im.shape)
+    im_ind = np.arange(0, dt.size).reshape(dt.shape)
     slices = spim.find_objects(pores)
     for i, s in enumerate(slices):
         Pradii[i] = dt[s].max()
         index[i] = im_ind[s][dt[s] == Pradii[i]][0]
-    coords = np.vstack(np.unravel_index(index, im.shape)).T
+    coords = np.vstack(np.unravel_index(index, dt.shape)).T
     if dt.ndim == 2:
         coords = np.vstack(
             (coords[:, 0], coords[:, 1], np.zeros_like(coords[:, 0]))).T

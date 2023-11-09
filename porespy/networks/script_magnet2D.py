@@ -47,7 +47,7 @@ def sk_to_network2(pores, throats, dt):
     for i, s in enumerate(slices):
         Pradii[i] = dt[s].max()
         index[i] = im_ind[s][dt[s] == Pradii[i]][0]
-    coords = np.vstack(np.unravel_index(index, im.shape)).T
+    coords = np.vstack(np.unravel_index(index, dt.shape)).T
     if dt.ndim == 2:
         coords = np.vstack(
             (coords[:, 0], coords[:, 1], np.zeros_like(coords[:, 0]))).T
@@ -65,8 +65,8 @@ dt = edt(im)
 sk = skeletonize_magnet2(im)
 juncs, ends = analyze_skeleton(sk)
 pores, throats = partition_skeleton(sk, juncs + ends, dt)
-new_juncs = find_throat_junctions(im=im, pores=pores, throats=throats, dt=dt)
-pores, throats = partition_skeleton(sk, juncs + new_juncs + ends, dt=dt)
+new_juncs, pores, new_throats = find_throat_junctions(im=im, pores=pores, throats=throats, dt=dt)
+pores, throats = partition_skeleton(sk, (juncs + new_juncs + ends) > 0, dt=dt)
 net = sk_to_network(pores, throats, dt)
 
 
