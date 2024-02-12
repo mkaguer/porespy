@@ -83,6 +83,8 @@ setup(
         'scikit-image',
         'scipy',
         'tqdm',
+        'PyWavelets',
+        'nanomesh',
     ],
     author='PoreSpy Team',
     author_email='jgostick@gmail.com',

@@ -38,6 +38,7 @@ debugging, and illustration purposes.
 from ._imgen import *
 from ._pseudo_packings import *
 from ._noise import *
+from ._spheres_from_coords import *
 from ._borders import *
 from ._fractals import *
-from ._spheres_from_coords import *
+from ._micromodels import *
