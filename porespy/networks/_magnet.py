@@ -18,11 +18,12 @@ from porespy.tools import (
     ps_round,
     ps_rect,
     extend_slice,
-    insert_sphere,
     Results,
     _make_disk,
     _make_ball,
     _insert_disks_at_points_parallel,
+    _insert_disk_at_points,
+    insert_sphere,
 )
 from porespy import settings
 from porespy.filters import (
@@ -32,8 +33,10 @@ from porespy.filters import (
     flood_func,
 )
 from porespy.filters._snows import _estimate_overlap
+from porespy.tools import get_tqdm
 
 
+tqdm = get_tqdm()
 logger = logging.getLogger(__name__)
 
 
@@ -368,7 +371,7 @@ def pad_faces_for_skeletonization(im, pad_width=5, r=3):
     return im_new
 
 
-def spheres_to_network(sk, dt, fbd, pt, voxel_size=1, boundary_width=3):
+def spheres_to_network(sk, dt, fbd, voxel_size=1, boundary_width=3):
     r"""
     Assemble a dictionary object containing essential topological and
     geometrical data for a pore network. The information is retrieved from the
@@ -385,8 +388,6 @@ def spheres_to_network(sk, dt, fbd, pt, voxel_size=1, boundary_width=3):
         The distance transform of an image
     fbd: Results object
         A custom object returned from insert_pore_bodies()
-    pt : Results object
-        A custom object returned from analyze_skeleton()
     voxel_size : scalar (default = 1)
         The resolution of the image, expressed as the length of one side of a
         voxel, so the volume of a voxel would be **voxel_size**-cubed.
@@ -886,7 +887,7 @@ def find_throat_junctions(im, pores, throats, dt=None):
         throats = spim.label(throats > 0, structure=strel)[0]
     new_pores = np.zeros_like(pores, dtype=bool)
     slices = spim.find_objects(throats)
-    for i, s in enumerate(slices):
+    for i, s in enumerate(tqdm(slices)):
         sx = extend_slice(s, pores.shape, pad=1)
         im_sub = throats[sx] == (i + 1)
         # Get starting point for fmm as pore with highest index number
@@ -975,7 +976,7 @@ def sk_to_network(pores, throats, dt):
     conns = np.vstack((P1[mask], P2[mask])).T.astype(int) - 1
     Tradii = -np.ones(conns.shape[0])
     slices = spim.find_objects(throats)
-    for i, s in enumerate(slices):
+    for i, s in enumerate(tqdm(slices)):
         im_sub = throats[s] == (i + 1)
         Rs = dt[s][im_sub]
         # Tradii[i] = np.median(Rs)
@@ -985,7 +986,7 @@ def sk_to_network(pores, throats, dt):
     index = -np.ones(pores.max(), dtype=int)
     im_ind = np.arange(0, dt.size).reshape(dt.shape)
     slices = spim.find_objects(pores)
-    for i, s in enumerate(slices):
+    for i, s in enumerate(tqdm(slices)):
         Pradii[i] = dt[s].max()
         index[i] = im_ind[s][dt[s] == Pradii[i]][0]
     coords = np.vstack(np.unravel_index(index, dt.shape)).T
