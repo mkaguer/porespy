@@ -1,73 +1,32 @@
-import logging
-import numpy as np
+from porespy.filters import trim_floating_solid, flood_func, region_size
+from porespy.filters._snows import _estimate_overlap
+from porespy.tools import ps_rect, Results, extend_slice, make_contiguous
+from porespy.tools import _insert_disks_at_points, ps_round, extract_subsection
+from porespy.generators import borders
+from skimage.morphology import square, cube
+from scipy.ndimage import maximum_position
+from skfmm import distance
+from porespy import settings
+from edt import edt
+import skimage as ski
+import dask.array as da
 import scipy.ndimage as spim
 import scipy.signal as spsg
-import skimage as ski
-from edt import edt
-import dask.array as da
-from skfmm import distance
-from skimage.morphology import square, cube, skeletonize_3d
-from scipy.ndimage import maximum_position
-from numba import njit
-from porespy.generators import borders
-from porespy.tools import (
-    make_contiguous,
-    unpad,
-    extract_subsection,
-    ps_disk,
-    ps_round,
-    ps_rect,
-    extend_slice,
-    Results,
-    _make_disk,
-    _make_ball,
-    _insert_disks_at_points_parallel,
-    _insert_disk_at_points,
-    insert_sphere,
-)
-from porespy import settings
-from porespy.filters import (
-    trim_floating_solid,
-    fill_blind_pores,
-    region_size,
-    flood_func,
-)
-from porespy.filters._snows import _estimate_overlap
+import logging
+import numpy as np
 from porespy.tools import get_tqdm
-
 
 tqdm = get_tqdm()
 logger = logging.getLogger(__name__)
 
 
-__all__ = [
-    'magnet',
-    'reduce_points',
-    'merge_nearby_pores',
-    'padded_image',
-    'skeleton_parallel',
-    'skeleton',
-    'spheres_to_network',
-    'insert_pore_bodies',
-    'analyze_skeleton',
-    'pad_faces_for_skeletonization',
-    'sk_to_network',
-    'partition_skeleton',
-    'find_throat_junctions',
-    'skeletonize_magnet2',
-    '_check_skeleton_health',
-]
-
-
 def magnet(im,
            sk=None,
-           endpoints=True,
-           padding=None,
            parallel=False,
            surface=False,
            voxel_size=1,
            l_max=7,
-           boundary_width=3,
+           throat_junctions=None,
            **kwargs):
     r"""
     Perform a Medial Axis Guided Network ExtracTion (MAGNET) on an image of
@@ -75,11 +34,9 @@ def magnet(im,
 
     This is a modernized python implementation of a classical
     network extraction method. First, the skeleton of the provided image is
-    determined. The skeleton can be computed in serial or parallel modes and
-    padding can be optionally added to the image prior to taking the skeleton
-    for help in identifying boundary pores. Next, all the junction points of
-    the skeleton are determined by using convolution to find voxels with extra
-    neighbors, as well as terminal points on the ends of branches. Pores are
+    determined. The skeleton can be computed in serial or parallel modes.
+    Next, all the junction points of the skeleton are determined by using
+    convolution including terminal points on the ends of branches. ClustersPores are
     then inserted at these points. The size of the pores inserted is based on
     the distance transform value at it's junction. This approach results in
     many long throats so more pores are added using a maximum filter along long
@@ -97,21 +54,11 @@ def magnet(im,
         Optionally provide your own skeleton of the image. If `sk` is `None` the
         skeleton is computed using `skimage.morphology.skeleton_3d`.  A check
         is made to ensure no shells are found in the resulting skeleton.
-    endpoints : boolean
-        If `True` pores are inserted at endpoints as well as junction points.
-        This is the default mode. If `False`, endpoints are ignored. This is
-        useful for flow simulations where endpoints are essentially dead ends
-        where no flow occurs.
-    padding : integer
-        The amount of padding to add to the image before determining the
-        skeleton. Padding helps coerce the skeleton to the edge of the image
-        for easy determination of boundary pores. If 'None', no padding is
-        added to the image. WARNING: this feature may create skeleton clusters
-        near the edge of the image resulting in disconnected pores.
     surface : boolean
         If `False` disconnected solid at the surface of the image is NOT
         trimmed. This is the default mode. However, if `True`, disconnected
-        solid at the surface of the image is trimmed.
+        solid at the surface of the image is trimmed. This is NOT applied when
+        im is 2d.
     parallel : boolean
         If `False` the skeleton is calculated in serial. This is the default
         mode. However, if `True`, the skeleton is calculated in parallel using
@@ -120,396 +67,67 @@ def magnet(im,
         The resolution of the image, expressed as the length of one side of a
         voxel, so the volume of a voxel would be voxel_size-cubed
     l_max : scalar (default = 7)
-        The size of the maximum filter used in finding pores along long throats
-    boundary_width : integer (default = 0)
-        The number of voxels inward from the edge of the image which
-        constitutes the boundary. Pores centred within this boundary are
-        labelled as boundary pores.
+        The size of the maximum filter used in finding junction along long
+        throats. This argument is only used when throat_junctions is set to
+        "maximum filter" mode.
+    throat_junctions : str
+        The mode to use when finding throat junctions. The options are "maximum
+        filter" or "fast marching". If None is given, then throat junctions are
+        not found (this is the default).
 
     Returns
     -------
     net : dict
         A dictionary containing the most important pore and throat size data
-        and topological data. These are pore radius, throat radius, pore
-        coordinates, and throat connections. The dictionary names use the
-        OpenPNM convention (i.e. 'pore.coords', 'throat.conns', 'pore.radius',
-        'throat.radius'). Labels for boundary pores and overlapping throats
-        are also returned.
+        and topological data.
     sk : ndarray
         The skeleton of the image is also returned.
     """
     # get the skeleton
     if sk is None:
-        sk, im = skeleton(im, padding, surface, parallel, **kwargs)
+        sk, im = skeleton(im, surface, parallel, **kwargs)  # take skeleton
     else:
         if im.ndim == 3:
             _check_skeleton_health(sk.astype('bool'))
-    # find junction and terminal points
-    pt = analyze_skeleton(sk)
-    if not endpoints:
-        pts = pt.juncs
-    else:
-        pts = pt.juncs + pt.endpts
-    # take the distance transform
+    # take distance transform
     dt = edt(im)
-    # b = square(3) if im.ndim == 2 else cube(3)
-    # dt = spim.maximum_filter(dt, footprint=b)
-    # insert pores at junction points
-    fbd = insert_pore_bodies(sk, dt, pts, l_max)
-    # convert spheres to network dictionary
-    net = spheres_to_network(sk, dt, fbd, pt, voxel_size, boundary_width)
+    # find junctions
+    fj = find_junctions(sk)
+    juncs = fj.juncs + fj.endpts
+    juncs = merge_nearby_juncs(sk, juncs, dt)  # FIXME: merge juncs AND endpts?
+    # find throats
+    throats = (~juncs) * sk
+    # find throat junctions
+    if throat_junctions is not None:
+        mode = throat_junctions
+        ftj = find_throat_junctions(im, juncs, throats, dt, l_max, mode)
+        # add throat juncs to juncs
+        juncs = ftj.new_juncs.astype('bool') + juncs
+        # get new throats
+        throats = ftj.new_throats
+    # get network from junctions
+    net = junctions_to_network(sk, juncs, throats, dt, voxel_size)
     return net, sk
 
 
-def analyze_skeleton(sk):
-    r"""
-    Finds all the junction and end points in a skeleton.
-
-    It uses convolution to find voxels with extra neighbors, as well as terminal
-    points on the ends of branches with fewer neighbors.
-
-    Parameters
-    ------------
-    sk : ndarray
-        The skeleton of an image (boolean).
-
-    Returns
-    -------
-    pt : Results object
-        A custom object with the following data added as named attributes:
-        'juncs'
-        An array of ones where all the junction points were found
-        'endpts'
-        An array of ones where all the endpoints were found
-    """
-    # kernel for convolution
-    if sk.ndim == 2:
-        a = square(3)
-    else:
-        a = cube(3)
-    # compute convolution directly or via fft, whichever is fastest
-    conv = spsg.convolve(sk*1.0, a, mode='same', method='auto')
-    conv = np.rint(conv).astype(int)  # in case of fft, accuracy is lost
-    # find junction points of skeleton
-    juncs = (conv >= 4) * sk
-    # find endpoints of skeleton
-    endpts = (conv == 2) * sk
-    # results object
-    pt = Results()
-    pt.juncs = juncs
-    pt.endpts = endpts
-    return pt
-
-
-def insert_pore_bodies(sk, dt, pt, l_max=None, numba=False):
-    r"""
-    Insert spheres at each junction and/or terminal points of the skeleton
-    corresponding to the local size. A search for local maximums is performed
-    along throats between inserted spheres. Additional spheres are inserted
-    where any local maximums are found.
-
-    Parameters
-    ------------
-    sk : ndarray
-        The skeleton of an image (boolean).
-    dt : ndarray
-        The distance transform of the phase of interest.
-    pt : ndarray
-        The junction and/or terminal points of the skeleton at which to insert
-        pores.
-    l_max: int
-        The length of the cubical structuring element to use in the maximum
-        filter for inserting pores along long throats. If `None` is given
-        then "throat" nodes are ignored.
-
-    Returns
-    -------
-    fbd : Results object
-        A custom object with the following data as named attributes:
-        'Ps'
-        Inserted spheres corresponding to the local size
-        'pts'
-        Points labeled corresponding to pore index
-        'p_coords'
-        The coordinates where each pore body is added
-        'p_radius'
-        The radius of each pore added
-    """
-    # label and reduce points
-    ND = pt.ndim
-    s = spim.generate_binary_structure(ND, ND)
-    pts1, Np = spim.label(pt, structure=s)
-    pts2 = reduce_points(pts1, dt)
-    # find coords of junction/endpoints and sort
-    c = np.vstack(np.where(pts2)).astype(int).T
-    c = np.insert(c, ND, pts2[np.where(pts2)].T, axis=1)
-    c = c[pts2[np.where(pts2)].T.argsort()]
-    # insert pore bodies at points
-    Ps = np.zeros_like(pts1, dtype=int)
-    p_coords = []
-    for n, row in enumerate(c):
-        coord = row[0:ND]
-        radius = np.round(dt[tuple(coord)])
-        insert_sphere(im=Ps, c=coord, r=radius, v=1, overwrite=False)
-        p_coords.append(coord)
-    # Find maximums along long throats
-    temp = Ps * np.inf
-    mask = np.isnan(temp)
-    temp[mask] = 0
-    temp = temp + dt * sk
-    if l_max is not None:
-        b = square(l_max) if ND == 2 else cube(l_max)
-        mx = (spim.maximum_filter(temp, footprint=b) == dt) * sk
-        # label and reduce maximum points
-        mx, _ = spim.label(mx, structure=s)
-        mx = reduce_points(mx, dt)
-        # remove any maximum points that lie on junction cluster!
-        mx[pts1 > 0] = 0
-        mx = make_contiguous(mx)  # make contiguous again
-        # find coords of mx points and sort
-        c = np.vstack(np.where(mx)).astype(int).T
-        c = np.insert(c, ND, mx[np.where(mx)].T, axis=1)
-        c = c[mx[np.where(mx)].T.argsort()]
-        # add mx coords to list of coords
-        p_coords = p_coords + list(c[:, 0:ND])
-        # assign index to mx
-        mx[mx > 0] += n + 1
-        # merge mx with junction/endpoints
-        pts1 = pts1 + mx
-    # results object
-    fbd = Results()
-    fbd.Ps = Ps
-    fbd.pts = pts1
-    fbd.p_coords = np.array(p_coords)
-    fbd.p_radius = np.array([dt[tuple(co)] for co in p_coords])
-    return fbd
-
-
-def merge_nearby_pores(network, Lmax):
-    r"""
-    Merges sets of pores that are within a given distance of each other
-
-    Parameters
-    ----------
-    network : dict
-        The OpenPNM network object
-    Lmax : scalar
-        Any pores within this distance of each other will be merged
-
-    Returns
-    -------
-    network : dict
-        The OpenPNM network with the pores merged
-
-    Notes
-    -----
-    - This works even if the pores are not topologically connected
-    - The *new* pore takes on the average values of the ones that are being merged,
-      including average coordinates, sizes etc.  Labels are all set to False.
-    - Throats connected to the pores that are being merged are kept and rejoined
-      to the *new* pore, so keep all their original properties. This includes length
-      which might change slightly.
-    """
-    from openpnm.topotools import extend, trim, bond_percolation
-    from openpnm.models.network import pore_to_pore_distance
-    L = pore_to_pore_distance(network)
-    clusters = bond_percolation(network, L <= Lmax)
-    labels = np.unique(clusters.site_labels)
-    cluster_num = {v: [] for v in labels}
-    for n, v in enumerate(clusters.site_labels):
-        if v >= 0:
-            cluster_num[v].append(n)
-    _ = cluster_num.pop(-1, None)
-    Np = network.Np
-    props = network.props(element='pore')
-    props.remove('pore.coords')
-    for i, Ps in enumerate(cluster_num.values()):
-        crds = np.mean(network['pore.coords'][Ps], axis=0)
-        extend(network, pore_coords=[crds])
-        for prop in props:
-            network[prop][-1] = np.mean(network[prop][Ps])
-        Ts = network.find_neighbor_throats(pores=Ps, mode='xor')
-        conns = network.conns[Ts, :]
-        mask = np.isin(conns, Ps)
-        conns[mask] = Np + i
-        network['throat.conns'][Ts, :] = np.sort(conns, axis=1)
-    Ps = np.where(clusters.site_labels >= 0)[0]
-    trim(network=network, pores=Ps)
-    return network
-
-
-def pad_faces_for_skeletonization(im, pad_width=5, r=3):
-    r"""
-    Pad faces of domain with solid with holes to force skeleton to edge of image
-
-    Parameters
-    ----------
-    im : ndarray
-        The boolean image of the porous media with `True` value indicating the
-        void phase.
-    pad_width : int or list
-        This is passed to the `numpy.pad` function so refer to that method for
-        details.
-    r : int
-        The radius of the holes to create.
-
-    Returns
-    -------
-    im_padded : ndarray
-        A image with solid on all sides that has holes at the local peaks of the
-        distance transform.  Applying a skeletonization on this image will force
-        the skeleton to draw branches to the edge of the image.
-
-    """
-    dt = edt(im)
-    faces = borders(im.shape, mode='faces')
-    mx = im * faces * (spim.maximum_filter(dt*faces, size=3) == dt)
-    mx = np.pad(mx, pad_width, mode='edge')
-    mx = spim.binary_dilation(mx, structure=ps_round(r, im.ndim, False))
-    im_new = np.pad(im, pad_width, mode='constant', constant_values=False)
-    im_new = im_new + mx
-    return im_new
-
-
-def spheres_to_network(sk, dt, fbd, voxel_size=1, boundary_width=3):
-    r"""
-    Assemble a dictionary object containing essential topological and
-    geometrical data for a pore network. The information is retrieved from the
-    skeleton and a labelled image of corresponding junction, endpoints, and
-    maximums. The essential throat and pore properties are throat connections,
-    throat radii, pore coordinates, and pore radii. Labels are also created
-    for overlapping throats and boundary pores.
-
-    Parameters
-    ------------
-    sk : ndarray
-        The skeleton of an image (boolean).
-    dt : ndarray
-        The distance transform of an image
-    fbd: Results object
-        A custom object returned from insert_pore_bodies()
-    voxel_size : scalar (default = 1)
-        The resolution of the image, expressed as the length of one side of a
-        voxel, so the volume of a voxel would be **voxel_size**-cubed.
-    boundary_width : integer (default = 0)
-        The number of voxels inward from the edge of the image which
-        constitutes the boundary. Pores centred within this boundary are
-        labelled as boundary pores.
-
-    Returns
-    -------
-    net : dict
-        A dictionary containing the most important pore and throat size data
-        and topological data. These are pore radius, throat radius, pore
-        coordinates, and throat connections. The dictionary names use the
-        OpenPNM convention (i.e. 'pore.coords', 'throat.conns', 'pore.radius',
-        'throat.radius'). Labels for boundary pores and overlapping throats
-        are also returned.
-    """
-    # no. of dimensions and shape
-    ND = fbd.Ps.ndim
-    shape = fbd.Ps.shape
-    # identify throat segments
-    pts = fbd.pts
-    throats = ~(pts > 0) * sk
-    # label throats
-    s = spim.generate_binary_structure(ND, ND)
-    throats, num_throats = spim.label(throats, structure=s)
-    # get slicess of throats
-    slicess = spim.find_objects(throats)  # Nt by 2
-    # initialize throat conns and radius
-    t_conns = np.zeros((len(slicess), 2), dtype=int)
-    t_radius = np.zeros((len(slicess)), dtype=float)
-    # loop through throats to get t_conns and t_radius
-    for i in range(num_throats):
-        throat_l = i
-        ss = extend_slice(slicess[throat_l], shape)
-        # get slices
-        sub_im_p = fbd.pts[ss]
-        sub_im_l = throats[ss]
-        sub_sk = sk[ss]
-        sub_dt = dt[ss]
-        throat_im = sub_im_l == i+1
-        # dilate throat_im to capture connecting pore indices
-        structure = spim.generate_binary_structure(ND, ND)
-        im_w_throats_l = spim.binary_dilation(input=throat_im,
-                                              structure=structure)
-        im_w_throats_l = im_w_throats_l * sub_sk
-        im_w_throats_l = im_w_throats_l * sub_im_p
-        # throat conns
-        Pn_l = np.unique(im_w_throats_l)[1:] - 1
-        if np.any(Pn_l):
-            t_conns[throat_l, :] = Pn_l
-        # throat radius
-        throat_dt = throat_im * sub_dt
-        t_radius[throat_l] = np.average(throat_dt[throat_dt != 0])
-    # remove [0,0] case for isolated one pixel long throat
-    remove = np.where(t_conns[:, 0] == t_conns[:, 1])
-    t_conns = np.delete(t_conns, remove, axis=0)
-    t_radius = np.delete(t_radius, remove, axis=0)
-    # find overlapping pores
-    Nt = len(t_conns)
-    P1 = t_conns[:, 0]
-    P2 = t_conns[:, 1]
-    R1 = fbd.p_radius[P1]
-    R2 = fbd.p_radius[P2]
-    pt1 = fbd.p_coords[P1]
-    pt2 = fbd.p_coords[P2]
-    dist = np.linalg.norm(pt1 - pt2, axis=1)
-    t_overlapping = dist <= R1 + R2
-    # set throat radius of overlapping pores
-    Rs = np.hstack((R1.reshape((Nt, 1)), R2.reshape((Nt, 1))))
-    Rmin = np.min(Rs, axis=1)
-    t_radius[t_overlapping] = 0.99 * Rmin[t_overlapping]
-    # ensure throat radius is smaller than pore radii
-    mask = Rmin <= t_radius
-    t_radius[mask] = 0.99 * Rmin[mask]
-    # pore coords
-    p_coords = fbd.p_coords.astype('float')
-    if ND == 2:  # If 2D, add 0's in 3rd dimension
-        Np = np.amax(fbd.pts)
-        p_coords = np.vstack((p_coords.T, np.zeros((Np, )))).T
-    # create network dictionary
-    net = {}
-    net['throat.conns'] = t_conns
-    net['pore.coords'] = p_coords * voxel_size
-    net['throat.radius'] = t_radius * voxel_size
-    net['pore.radius'] = fbd.p_radius * voxel_size
-    net['throat.overlapping'] = t_overlapping
-    bw = boundary_width
-    net['pore.xmin'] = p_coords[:, 0] <= 0 + bw
-    net['pore.xmax'] = p_coords[:, 0] >= shape[0] - 1 - bw
-    net['pore.ymin'] = p_coords[:, 1] <= 0 + bw
-    net['pore.ymax'] = p_coords[:, 1] >= shape[1] - 1 - bw
-    if ND == 3:
-        net['pore.zmin'] = p_coords[:, 2] <= 0 + bw
-        net['pore.zmax'] = p_coords[:, 2] >= shape[2] - 1 - bw
-    return net
-
-
-def skeleton(im, padding=None, surface=False, parallel=False, **kwargs):
+def skeleton(im, surface=False, parallel=False, **kwargs):
     r"""
     Takes the skeleton of an image. This function ensures that no shells are
     found in the resulting skeleton by trimming floating solids from the image
-    beforehand. The skeleton is taken using Lee's method as available in
-    scikit-image. Padding can be optionally added to the image prior to taking
-    the skeleton for easy determination of boundary pores. For faster
-    skeletonization, a parallel mode is available.
+    beforehand and by checking for shells after taking the skeleton. The
+    skeleton is taken using Lee's method as available in scikit-image. For
+    faster skeletonization, a parallel mode is available.
 
     Parameters
     ----------
     im : ndarray
         A binary image of porous media with 'True' values indicating phase of
         interest.
-    padding : integer
-        The amount of padding to add to the image before determining the
-        skeleton. Padding helps coerce the skeleton to the edge of the image
-        for easy determination of boundary pores. If 'None', no padding is
-        added to the image.
     surface : boolean
         If `False` disconnected solid at the surface of the image is NOT
         trimmed. This is the default mode. However, if `True`, disconnected
-        solid at the surface of the image is trimmed.
+        solid at the surface of the image is trimmed. Note that disconnected
+        solids are NOT removed if a 2D image is passed.
     parallel : boolean
         If `False` the skeleton is calculated in serial. This is the default
         mode. However, if `True`, the skeleton is calculated in parallel using
@@ -519,10 +137,10 @@ def skeleton(im, padding=None, surface=False, parallel=False, **kwargs):
     -------
     sk : ndarray
         Skeleton of image
+    im : ndarray
+        The image used to take the skeleton, the same as the input image except
+        for floating solids removed if the image supplied is 3D
     """
-    # add padding
-    if padding is not None:
-        im = padded_image(im, padding=padding)
     # trim floating solid from 3D images
     if im.ndim == 3:
         im = trim_floating_solid(im, conn=6, surface=surface)
@@ -531,10 +149,8 @@ def skeleton(im, padding=None, surface=False, parallel=False, **kwargs):
         sk = ski.morphology.skeletonize_3d(im).astype('bool')
     if parallel is True:  # parallel
         sk = skeleton_parallel(im, **kwargs)
-    # remove padding
-    if padding is not None:
-        sk = unpad(sk, pad_width=padding)
-        im = unpad(im, pad_width=padding)
+    if im.ndim == 3:
+        _check_skeleton_health(sk.astype('bool'))
     return sk, im
 
 
@@ -583,196 +199,369 @@ def skeleton_parallel(im, divs, overlap=None, cores=None):
     return skel
 
 
-def padded_image(im, padding=20):
+def find_junctions(sk):
     r"""
-    Pads the image prior to taking the skeleton so that the resulting skeleton
-    extends to the edge of the image. This is ideal for finding boundary pores.
-    For 2D images, `edge` mode is used to apply padding to the image. For 3D
-    images, the skeleton of each face is taken and small disks are inserted at
-    junction and endpoints. The original image is then padded in such a way
-    that small holes form from the inserted disks.
+    Finds all junctions and endpoints in a skeleton.
+
+    Parameters
+    ------------
+    sk : ndarray
+        The skeleton of an image (boolean).
+
+    Returns
+    -------
+    pt : Results object
+        A custom object with the following data added as named attributes:
+        'juncs'
+        An array of ones where all the junction points were found
+        'endpts'
+        An array of ones where all the endpoints were found
+    """
+    # kernel for convolution
+    if sk.ndim == 2:
+        a = square(3)
+    else:
+        a = cube(3)
+    # compute convolution directly or via fft, whichever is fastest
+    conv = spsg.convolve(sk*1.0, a, mode='same', method='auto')
+    conv = np.rint(conv).astype(int)  # in case of fft, accuracy is lost
+    # find junction points of skeleton
+    juncs = (conv >= 4) * sk
+    # find endpoints of skeleton
+    endpts = (conv == 2) * sk
+    # results object
+    pt = Results()
+    pt.juncs = juncs
+    pt.endpts = endpts
+    return pt
+
+
+def find_throat_junctions(im,
+                          juncs,
+                          throats,
+                          dt=None,
+                          l_max=7,
+                          mode="fast marching"):
+    r"""
+    Finds local peaks on the throat segments of a skeleton large enough to be
+    considered junctions.
 
     Parameters
     ----------
     im : ndarray
-        An image of the porous material of interest. Make sure to trim floating
-        solids beforehand.
-    padding : int
-        The amount of padding to add to each face of the image prior to taking
-        the skeleton.
+        A boolean array with `True` values indicating the void phase (or phase
+        of interest).
+    juncs : ndarray
+        An ndarray the same shape as `im` with clusters of junction voxels
+        uniquely labelled (1...Np).  If a boolean array is provided then a
+        cluster labeling is performed with full cubic connectivity.
+    throats : ndarray
+        An ndarray the same shape as `im` with clusters of throat voxels
+        uniquely labelled (1...Nt). If a boolean array is provided then a
+        cluster labeling is performed with full cubic connectivity.
+    dt : ndarray (optional)
+        The distance transform of the image. This is used to find local peaks
+        on the segments defined by `throats`. If these local peaks are sufficiently
+        high and spaced apart from each other they are considered throat junctions.
+        If not provided it will be computed from `im`.
+    l_max: int
+        The length of the cubical structuring element to use in the maximum
+        filter, if that mode is specified.
+    mode : string {'maximum filter' | 'fast marching' }
+        Specifies how to find throat junctions.
 
     Returns
     -------
-    padded : ndarray
-        The original image with padding applied for skeletonization.
+    results : dataclass
+        A dataclass-like object with the following named attributes:
+
+        =============== =============================================================
+        Atribute        Description
+        =============== =============================================================
+        new_juncs       The newly identified junctions on long throat segments. These
+                        are labelled starting from the 1+ the maximum in `pores`
+        juncs           The original juncs image with labels applied (if original
+                        `pores` image was given as a `bool` array.
+        new_throats     The new throat segments after dividing them at the newly
+                        found junction locations.
+        =============== =============================================================
     """
-    if im.ndim == 2:
-        padded = np.pad(im, pad_width=padding, mode='edge')
-    if im.ndim == 3:
-        # extract faces
-        xmin = im[0, :, :]
-        ymin = im[:, 0, :]
-        zmin = im[:, :, 0]
-        xmax = im[-1, :, :]
-        ymax = im[:, -1, :]
-        zmax = im[:, :, -1]
-        # take skeleton of each face and insert disks at junctions/endpoints
-        faces=[]
-        for face in [xmin, xmax, ymin, ymax, zmin, zmax]:
-            temp = np.pad(face, padding, mode='edge')
-            sk = ski.morphology.skeletonize_3d(temp).astype('bool')  # skeleton
-            sk = extract_subsection(sk, im.shape)  # really handy function
-            pt = analyze_skeleton(sk)  # find junction and endpoints
-            dt = edt(face)
-            # find centres where to insert disks
-            pts = pt.juncs + pt.endpts
-            s = spim.generate_binary_structure(2, 2)
-            pts, _ = spim.label(pts, structure=s)
-            centres = reduce_points(pts, dt)
-            # insert disks at junction and endpoints
-            disk = ps_disk(r=5, smooth=True)
-            face = spim.binary_dilation(centres, structure=disk)
-            face = np.pad(face, pad_width=1)
-            faces.append(face)
-        # pad original image by 1 voxel so new faces can be added
-        padded = np.pad(im, pad_width=1)
-        # add new faces to padded image
-        padded[0, :, :] = faces[0]
-        padded[-1, :, :] = faces[1]
-        padded[:, 0, :] = faces[2]
-        padded[:, -1, :] = faces[3]
-        padded[:, :, 0] = faces[4]
-        padded[:, :, -1] = faces[5]
-        # pad image full amount using `edge` mode
-        padded = np.pad(padded, pad_width=padding-1, mode='edge')
-    return padded
+    # Parse input args
+    if dt is None:
+        dt = edt(im)
+    strel = ps_rect(3, ndim=juncs.ndim)
+    if juncs.dtype == bool:
+        juncs = spim.label(juncs > 0, structure=strel)[0]
+    if throats.dtype == bool:
+        throats = spim.label(throats > 0, structure=strel)[0]
+    if mode == "maximum filter":
+        # reduce clusters to pore centers
+        ct = juncs_to_pore_centers(juncs, dt)
+        # find coords of pore centers and radii
+        coords = np.vstack(np.where(ct)).astype(int)
+        radii = dt[np.where(ct)].astype(int)
+        # insert spheres
+        Ps = np.zeros_like(ct, dtype=int)
+        Ps = _insert_disks_at_points(Ps, coords, radii, v=1)
+        # Find maximums along long throats
+        temp = Ps * np.inf
+        mask = np.isnan(temp)
+        temp[mask] = 0
+        temp = temp + dt * sk
+        b = square(l_max) if ct.ndim == 2 else cube(l_max)
+        mx = (spim.maximum_filter(temp, footprint=b) == dt) * sk
+        mx = juncs_to_pore_centers(mx, dt)
+        # remove maximum points that lie on junction cluster!
+        mx[juncs > 0] = 0
+        mx = make_contiguous(mx)  # make contiguous again
+        # set new_juncs equal to mx
+        new_juncs = mx
+    if mode == "fast marching":
+        new_juncs = np.zeros_like(juncs, dtype=bool)
+        slices = spim.find_objects(throats)
+        for i, s in enumerate(tqdm(slices)):
+            sx = extend_slice(s, juncs.shape, pad=1)
+            im_sub = throats[sx] == (i + 1)
+            # Get starting point for fmm as pore with highest index number
+            # fmm requires full connectivity so must dilate im_sub
+            phi = spim.binary_dilation(im_sub, structure=strel)
+            tmp = juncs[sx]*phi
+            start = np.where(tmp == tmp.max())
+            # Convert to masked array to confine fmm to throat segment
+            phi = np.ma.array(phi, mask=phi == 0)
+            phi[start] = 0
+            dist = np.array(distance(phi))*im_sub  # Convert from masked to ndarray
+            # Obtain indices into segment
+            ind = np.argsort(dist[im_sub])
+            # Analyze dt profile to find significant peaks
+            line_profile = dt[sx][im_sub][ind]
+            pk = spsg.find_peaks(
+                line_profile,
+                prominence=1,
+                distance=max(1, line_profile.min()),
+            )
+            # Add peak(s) to new_juncs image
+            hits = dist[im_sub][ind][pk[0]]
+            for d in hits:
+                new_juncs[sx] += (dist == d)
+        # label new_juncs
+        new_juncs = spim.label(new_juncs, structure=strel)[0]
+    # Remove peaks from original throat image and re-label
+    new_throats = spim.label(throats*(new_juncs == 0), structure=strel)[0]
+    # increment new_juncs by labels in original pores
+    new_juncs[new_juncs > 0] += juncs.max()
+    results = Results()
+    results.new_juncs = new_juncs
+    results.juncs = juncs
+    results.new_throats = new_throats
+    return results
 
 
-def reduce_points(points, dt):
+def merge_nearby_juncs(sk, juncs, dt=3):
     r"""
-    Clusters of junction points are reduced to a single voxel, whereby the new
-    voxel, corresponds to the one that has the largest distance transform value
-    from within the original cluster. This method, unlike reduce_peaks, ensures
-    that the new voxel lies on the original set.
+    Merges nearby junctions found in the skeleton
 
     Parameters
     ----------
-    points : ndarray
-        A lablled image containing clusters of junction points to be reduced.
+    sk : ndarray
+        A boolean image of the skeleton of the phase of interest
+    juncs : ndarray
+        A boolean array the same shape as `sk` with `True` values indicating
+        the junction points of the skeleton.
+    dt : ndarray or int, optional
+        The distance transform of the phase of interest. If dt is a scalar,
+        then a hard threshold is used to determine "near" junctions.
+
+    Returns
+    -------
+    results : dataclass
+        A `Results` object with images of `pores` and `throats` each containing
+        the labelled clusters of connected voxels.
+    """
+    strel = ps_rect(3, sk.ndim)
+    labels = spim.label(sk*~juncs, structure=strel)[0]
+    sizes = region_size(labels)
+    # Add voxels from skeleton to junctions if they are too close to each other
+    if isinstance(dt, (int, float)):  # If dt is a scalar, use hard threshold
+        juncs += (sizes <= dt)*(labels > 0)
+    else:  # If dt is proper dt, threshold each voxel specifically
+        # Division by root(ndim) limits range since size of cluster is not quite
+        # equal to distance between end points since size does not account for
+        # diagonally oriented or windy segements.
+        dists = flood_func(dt, np.amin, labels=labels) / (sk.ndim)**0.5
+        juncs += (sizes <= dists)*(labels > 0)
+
+    return juncs
+
+
+def juncs_to_pore_centers(juncs, dt):
+    r"""
+    Finds pore centers from an image of junctions. To do this, clusters of
+    junction points are reduced to a single voxel, whereby the new voxel,
+    corresponds to the one that has the largest distance transform value from
+    within the original cluster. This method, ensures that the 'pore centre'
+    lies on the original set of voxels.
+
+    Parameters
+    ----------
+    juncs : ndarray
+        An ndarray the same shape as `dt` with clusters of junction voxels
+        uniquely labelled (1...Np).  If a boolean array is provided then a
+        cluster labeling is performed with full cubic connectivity.
 
     dt : ndarray
         The distance transform of the original image.
 
     Returns
     -------
-    image : ndarray
-        An array with the same number of isolated junction points as the
-        original image, but without clustering.
+    pc : ndarray
+        The resulting pore centres labelled
     """
-    reduced_pts = np.zeros_like(points, dtype=int)
+    # cubic structuring element, full connectivity
+    strel = ps_rect(3, ndim=juncs.ndim)
+    if juncs.dtype == bool:
+        juncs = spim.label(juncs > 0, structure=strel)[0]
+    # initialize reduced juncs
+    reduced_juncs = np.zeros_like(juncs, dtype=int)
     # find position of maximums by labelled cluster
-    max_coords = maximum_position(dt, points, range(1, np.max(points)+1))
+    max_coords = maximum_position(dt, juncs, range(1, np.max(juncs)+1))
     # Get row and column coordinates within each cluster
     x = [pos[0] for pos in max_coords]
     y = [pos[1] for pos in max_coords]
     # Set the pixels at the maximum coordinates to the cluster labels
-    if points.ndim==2:
-        reduced_pts[x, y] = points[x, y]
+    if juncs.ndim==2:
+        reduced_juncs[x, y] = juncs[x, y]
     else:
         z = [pos[2] for pos in max_coords]
-        reduced_pts[x, y, z] = points[x, y, z]
-    return reduced_pts
+        reduced_juncs[x, y, z] = juncs[x, y, z]
+    return reduced_juncs
 
 
-def _check_skeleton_health(sk):
+def junctions_to_network(sk, juncs, throats, dt, voxel_size=1):
     r"""
-    This function checks the health of the skeleton by looking for any shells.
+    Assemble a dictionary object containing essential topological and
+    geometrical data for a pore network. The information is retrieved from the
+    distance transform, an image of labelled junctions, and an image of
+    labelled throats.
 
     Parameters
-    ----------
+    ------------
     sk : ndarray
-        The skeleton of an image
+        A boolean image of the skeleton of the phase of interest
+    juncs : ndarray
+        An ndarray the same shape as `im` with clusters of junction voxels
+        uniquely labelled (1...Np).  If a boolean array is provided then a
+        cluster labeling is performed with full cubic connectivity.
+    throats : ndarray
+        An ndarray the same shape as `im` with clusters of throat voxels
+        uniquely labelled (1...Nt). If a boolean array is provided then a
+        cluster labeling is performed with full cubic connectivity.
+    dt : ndarray (optional)
+        The distance transform of the image.
+    voxel_size : scalar (default = 1)
+        The resolution of the image, expressed as the length of one side of a
+        voxel, so the volume of a voxel would be **voxel_size**-cubed.
 
     Returns
     -------
-    N_shells : int
-        The number of shells detected in the skeleton. If any shells are
-        detected a warning is triggered.
+    net : dict
+        A dictionary containing the most important pore and throat size data
+        and topological data. These are pore radius, throat radius, pore
+        coordinates, and throat connections. The dictionary names use the
+        OpenPNM convention (i.e. 'pore.coords', 'throat.conns', 'pore.radius',
+        'throat.radius'). Labels for boundary pores and overlapping throats
+        are also returned.
     """
-    sk = np.pad(sk, 1)  # pad by 1 void voxel to avoid false warning
-    _, N = spim.label(input=~sk.astype('bool'))
-    N_shells = N - 1
-    if N_shells > 0:
-        logger.warning(f"{N_shells} shells were detected in the skeleton. "
-                       "Trim floating solids using: "
-                       "porespy.filters.trim_floating_solid()")
-    return N_shells
+    # Parse input args
+    strel = ps_rect(3, ndim=juncs.ndim)
+    if juncs.dtype == bool:
+        juncs = spim.label(juncs > 0, structure=strel)[0]
+    if throats.dtype == bool:
+        throats = spim.label(throats > 0, structure=strel)[0]
+    # get slicess of throats
+    slices = spim.find_objects(throats)  # Nt by 2
+    # initialize throat conns and radius
+    Nt = len(slices)
+    t_conns = np.zeros((Nt, 2), dtype=int)
+    t_radius = np.zeros((Nt), dtype=float)
+    # loop through throats to get t_conns and t_radius
+    for throat in range(Nt):
+        ss = extend_slice(slices[throat], throats.shape)
+        # get slices
+        sub_juncs = juncs[ss]  # sub_im_p
+        sub_throats = throats[ss]  # sub_im_l
+        sub_sk = sk[ss]
+        sub_dt = dt[ss]
+        throat_im = sub_throats == throat+1
+        # dilate throat_im to capture connecting pore indices
+        throat_im_dilated = spim.binary_dilation(throat_im, strel)
+        throat_im_dilated = throat_im_dilated * sub_sk
+        throat_im_dilated = throat_im_dilated * sub_juncs
+        # throat conns
+        Pn_l = np.unique(throat_im_dilated)[1:] - 1
+        # FIXME: I removed if statement. Is that okay?
+        t_conns[throat, :] = Pn_l
+        # throat radius
+        throat_dt = throat_im * sub_dt
+        # FIXME: Integrate R^4 and assume square cross-section!
+        t_radius[throat] = (np.average(throat_dt[throat_dt != 0]**4))**(1/4)
+    # FIXME: was it okay to remove remove?
+    # FIXME: did not set overlapping throat radius to min of neighbour pores
+    # find pore coords
+    Np = juncs.max()
+    ct = juncs_to_pore_centers(juncs, dt)  # pore centres!
+    p_coords = np.vstack(np.where(ct)).astype(float).T
+    p_coords = np.insert(p_coords, juncs.ndim, ct[np.where(ct)], axis=1)
+    p_coords = p_coords[ct[np.where(ct)].T.argsort()]
+    p_coords = p_coords[:, 0:juncs.ndim]
+    if p_coords.shape[1] == 2:  # If 2D, add zeros in 3rd column
+        p_coords = np.hstack((p_coords, np.zeros((Np, 1))))
+    # find pore radius
+    p_radius = dt[np.where(ct)].reshape((Np, 1)).astype(float)
+    p_radius = np.insert(p_radius, 1, ct[np.where(ct)], axis=1)
+    p_radius = p_radius[ct[np.where(ct)].T.argsort()]
+    p_radius = p_radius[:, 0].reshape(Np)
+    # create network dictionary
+    net = {}
+    net['throat.conns'] = t_conns
+    net['pore.coords'] = p_coords * voxel_size
+    net['throat.radius'] = t_radius * voxel_size
+    net['pore.radius'] = p_radius * voxel_size
+    net['pore.index'] = np.arange(0, Np)
+    return net
 
 
-@njit(parallel=False)
-def _insert_disks_at_points_m(im, coords, radii, v, smooth=True,
-                              overwrite=False):  # pragma: no cover
+def pad_faces_for_skeletonization(im, pad_width=5, r=3):
     r"""
-    Insert spheres (or disks) of specified radii into an ND-image at given locations.
-
-    This function uses numba to accelerate the process, and does not overwrite
-    any existing values (i.e. only writes to locations containing zeros).
+    Pad faces of domain with solid with holes to force skeleton to edge of image
 
     Parameters
     ----------
-    im : ND-array
-        The image into which the spheres/disks should be inserted. This is an
-        'in-place' operation.
-    coords : ND-array
-        The center point of each sphere/disk in an array of shape
-        ``ndim by npts``
-    radii : array_like
-        The radii of the spheres/disks to add.
-    v : scalar
-        The value to insert
-    smooth : boolean, optional
-        If ``True`` (default) then the spheres/disks will not have the litte
-        nibs on the surfaces.
-    overwrite : boolean, optional
-        If ``True`` then the inserted spheres overwrite existing values.  The
-        default is ``False``.
+    im : ndarray
+        The boolean image of the porous media with `True` value indicating the
+        void phase.
+    pad_width : int or list
+        This is passed to the `numpy.pad` function so refer to that method for
+        details.
+    r : int
+        The radius of the holes to create.
+
+    Returns
+    -------
+    im_padded : ndarray
+        A image with solid on all sides that has holes at the local peaks of the
+        distance transform.  Applying a skeletonization on this image will force
+        the skeleton to draw branches to the edge of the image.
 
     """
-    p_coords = []
-    npts = len(coords[0])
-    if im.ndim == 2:
-        xlim, ylim = im.shape
-        for i in range(npts):
-            r = radii[i]
-            s = _make_disk(r, smooth)
-            pt = coords[:, i]
-            if im[pt[0], pt[1]] == 0:
-                p_coords.append(pt)
-                for a, x in enumerate(range(pt[0]-r, pt[0]+r+1)):
-                    if (x >= 0) and (x < xlim):
-                        for b, y in enumerate(range(pt[1]-r, pt[1]+r+1)):
-                            if (y >= 0) and (y < ylim):
-                                if s[a, b] == 1:
-                                    if overwrite or (im[x, y] == 0):
-                                        im[x, y] = v[i]
-    elif im.ndim == 3:
-        xlim, ylim, zlim = im.shape
-        for i in range(npts):
-            r = radii[i]
-            s = _make_ball(r, smooth)
-            pt = coords[:, i]
-            if im[pt[0], pt[1], pt[2]] == 0:
-                p_coords.append(pt)
-                for a, x in enumerate(range(pt[0]-r, pt[0]+r+1)):
-                    if (x >= 0) and (x < xlim):
-                        for b, y in enumerate(range(pt[1]-r, pt[1]+r+1)):
-                            if (y >= 0) and (y < ylim):
-                                for c, z in enumerate(range(pt[2]-r, pt[2]+r+1)):
-                                    if (z >= 0) and (z < zlim):
-                                        if s[a, b, c] == 1:
-                                            if overwrite or (im[x, y, z] == 0):
-                                                im[x, y, z] = v[i]
-    return im, p_coords
+    dt = edt(im)
+    faces = borders(im.shape, mode='faces')
+    mx = im * faces * (spim.maximum_filter(dt*faces, size=3) == dt)
+    mx = np.pad(mx, pad_width, mode='edge')
+    mx = spim.binary_dilation(mx, structure=ps_round(r, im.ndim, False))
+    im_new = np.pad(im, pad_width, mode='constant', constant_values=False)
+    im_new = im_new + mx
+    return im_new
 
 
 def skeletonize_magnet2(im):
@@ -791,25 +580,25 @@ def skeletonize_magnet2(im):
     """
     if im.ndim == 2:
         pw = 5
-        im = fill_blind_pores(im, conn=8, surface=True)
+        im = ps.filters.fill_blind_pores(im, conn=8, surface=True)
         shape = np.array(im.shape)
         im = np.pad(im, pad_width=pw, mode='edge')
         im = np.pad(im, pad_width=shape, mode='symmetric')
-        sk = skeletonize_3d(im) > 0
+        sk = ski.morphology.skeletonize_3d(im) > 0
         sk = extract_subsection(sk, shape)
         return sk
     else:
         shape = np.array(im.shape)  # Save for later
         dt3D = edt(im)
         # Tidy-up image so skeleton is clean
-        im2 = fill_blind_pores(im, conn=26, surface=True)
+        im2 = ps.filters.fill_blind_pores(im, conn=26, surface=True)
         im2 = trim_floating_solid(im2, conn=6)
         # Add one layer to outside where holes will be defined
         im2 = np.pad(im2, 1, mode='edge')
         # This is needed for later since numpy is getting harder and harder to
         # deal with using indexing
         inds = np.arange(im2.size).reshape(im2.shape)
-        strel = ps_rect(w=1, ndim=2)  # This defines the hole size
+        # strel = ps_rect(w=1, ndim=2)  # This defines the hole size
         # Extract skeleton of each face, find junctions, and put holes on outer
         # layer of im2 at each one
         for face in [(0, 1), (0, im2.shape[0]),
@@ -831,97 +620,10 @@ def skeletonize_magnet2(im):
         # Extend the faces to convert holes into tunnels
         im2 = np.pad(im2, 20, mode='edge')
         # Perform skeletonization
-        sk = skeletonize_3d(im2) > 0
+        sk = ski.morphology.skeletonize_3d(im2) > 0
         # Extract the original 'center' of the image prior to padding
         sk = extract_subsection(sk, shape)
         return sk
-
-
-def find_throat_junctions(im, pores, throats, dt=None):
-    r"""
-    Finds local peaks on the throat segments of a skeleton large enough to be
-    considered junctions.
-
-    Parameters
-    ----------
-    im : ndarray
-        A boolean array with `True` values indicating the void phase (or phase
-        of interest).
-    pores : ndarray
-        An ndarray the same shape as `im` with clusters of pore voxels
-        uniquely labelled (1...Np).  If a boolean array is provided then a
-        cluster labeling is performed with full cubic connectivity.
-    throats : ndarray
-        An ndarray the same shape as `im` with clusters of throat voxels
-        uniquely labelled (1...Nt). If a boolean array is provided then a
-        cluster labeling is performed with full cubic connectivity.
-    dt : ndarray (optional)
-        The distance transform of the image. This is used to find local peaks
-        on the segments defined by `throats`. If these local peaks are sufficiently
-        high and spaced apart from each other they are considered throat junctions.
-        If not provided it will be computed from `im`.
-
-    Returns
-    -------
-    results : dataclass
-        A dataclass-like object with the following named attributes:
-
-        =============== =============================================================
-        Atribute        Description
-        =============== =============================================================
-        new_pores       The newly identified pores on long throat segments. These
-                        are labelled starting from the 1+ the maximum in `pores`
-        pores           The original pore image with labels applied (if original
-                        `pores` image was given as a `bool` array.
-        new_throats     The new throat segments after dividing them at the newly
-                        found pore locations.
-        =============== =============================================================
-    """
-    # Parse input args
-    if dt is None:
-        dt = edt(im)
-    strel = ps_rect(3, ndim=pores.ndim)
-    if pores.dtype == bool:
-        pores = spim.label(pores > 0, structure=strel)[0]
-    if throats.dtype == bool:
-        throats = spim.label(throats > 0, structure=strel)[0]
-    new_pores = np.zeros_like(pores, dtype=bool)
-    slices = spim.find_objects(throats)
-    for i, s in enumerate(tqdm(slices)):
-        sx = extend_slice(s, pores.shape, pad=1)
-        im_sub = throats[sx] == (i + 1)
-        # Get starting point for fmm as pore with highest index number
-        # fmm requires full connectivity so must dilate im_sub
-        phi = spim.binary_dilation(im_sub, structure=strel)
-        tmp = pores[sx]*phi
-        start = np.where(tmp == tmp.max())
-        # Convert to masked array to confine fmm to throat segment
-        phi = np.ma.array(phi, mask=phi == 0)
-        phi[start] = 0
-        dist = np.array(distance(phi))*im_sub  # Convert from masked to ndarray
-        # Obtain indices into segment
-        ind = np.argsort(dist[im_sub])
-        # Analyze dt profile to find significant peaks
-        line_profile = dt[sx][im_sub][ind]
-        pk = spsg.find_peaks(
-            line_profile,
-            prominence=1,
-            distance=max(1, line_profile.min()),
-        )
-        # Add peak(s) to new_pores image
-        hits = dist[im_sub][ind][pk[0]]
-        for d in hits:
-            new_pores[sx] += (dist == d)
-    # Remove peaks from original throat image and re-label
-    new_throats = spim.label(throats*(new_pores == 0), structure=strel)[0]
-    # Label new pores, incremented by labels in original pores
-    new_pores = spim.label(new_pores, structure=strel)[0]
-    new_pores[new_pores > 0] += pores.max()
-    results = Results()
-    results.new_pores = new_pores
-    results.pores = pores
-    results.new_throats = new_throats
-    return results
 
 
 def partition_skeleton(sk, juncs, dt):
@@ -1001,6 +703,32 @@ def sk_to_network(pores, throats, dt):
     return d
 
 
+def _check_skeleton_health(sk):
+    r"""
+    This function checks the health of the skeleton by looking for any shells.
+
+    Parameters
+    ----------
+    sk : ndarray
+        The skeleton of an image
+
+    Returns
+    -------
+    N_shells : int
+        The number of shells detected in the skeleton. If any shells are
+        detected a warning is triggered.
+    """
+    sk = np.pad(sk, 1)  # pad by 1 void voxel to avoid false warning
+    _, N = spim.label(input=~sk.astype('bool'))
+    N_shells = N - 1
+    if N_shells > 0:
+        logger.warning(f"{N_shells} shells were detected in the skeleton. "
+                       "Trim floating solids using: "
+                       "porespy.filters.trim_floating_solid()")
+
+    return N_shells
+
+
 if __name__ == "__main__":
     '''
     Simulation using MAGNET extraction
@@ -1009,30 +737,33 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import porespy as ps
     import openpnm as op
+    import numpy as np
     np.random.seed(10)
 
-    twod = False
-    export = False
-    res = 1e-6
-
     # Define 2D image
-    im2d = ps.generators.blobs([100, 100], porosity=0.6, blobiness=2)
-    im2d = ps.filters.fill_blind_pores(im2d, conn=8, surface=True)
+    im2 = ps.generators.blobs([100, 100], porosity=0.6, blobiness=2)
+    im2 = ps.filters.fill_blind_pores(im2, conn=8, surface=True)
 
     # Define 3D image
-    im3d = ps.generators.blobs([100, 100, 100], porosity=0.25, blobiness=1)
-    im3d = ps.filters.fill_blind_pores(im3d, conn=26, surface=True)
-    im3d = ps.filters.trim_floating_solid(im3d, conn=6, surface=False)
+    im3 = ps.generators.blobs([100, 100, 100], porosity=0.25, blobiness=1)
+    im3 = ps.filters.fill_blind_pores(im3, conn=26, surface=True)
+    im3 = ps.filters.trim_floating_solid(im3, conn=6, surface=False)
 
-    if twod:
-        im = im2d
-    else:
-        im = im3d
+    im = im2
 
-    print(f'porosity: {np.sum(im)/np.product(im.shape)*100}')
+    # plot
+    if im.ndim == 2:
+        plt.figure(1)
+        plt.imshow(im)
 
-    # MAGNET
-    net, sk = magnet(im, endpoints=True, voxel_size=res, l_max=7, boundary_width=3)
+    # MAGNET Steps
+    net, sk = magnet(im,
+                     sk=None,
+                     parallel=False,
+                     surface=False,
+                     voxel_size=1,
+                     l_max=7,
+                     throat_junctions="fast marching")
 
     # import network to openpnm
     net = op.io.network_from_porespy(net)
@@ -1046,96 +777,26 @@ if __name__ == "__main__":
     print(h)
 
     # visualize MAGNET network if 2d
-    if twod:
-        plt.figure(1)
+    if im.ndim == 2:
+        plt.figure(2)
         fig, ax = plt.subplots(figsize=[5, 5]);
         slice_m = im.T
         ax.imshow(slice_m, cmap=plt.cm.bone)
         op.visualization.plot_coordinates(ax=fig,
                                           network=net,
                                           size_by=net["pore.diameter"],
-                                          color_by=net["pore.ymax"],
+                                          color_by=net["pore.diameter"],
                                           markersize=200)
         op.visualization.plot_connections(network=net, ax=fig)
         ax.axis("off");
         print('Visualization Complete')
 
-    # add geometry models
-    geo = op.models.collections.geometry.cubes_and_cuboids.copy()
-    del geo['pore.diameter'], geo['throat.diameter']
-    net['pore.diameter'] = net['pore.diameter'].copy()
-    net['throat.diameter'] = net['throat.diameter'].copy()
-    net.add_model_collection(geo)
-    net.regenerate_models()
-
-    # add phase
-    phase = op.phase.Phase(network=net)
-    phase['pore.viscosity'] = 1e-3
-
-    # physics
-    phys = op.models.collections.physics.basic.copy()
-    phase.add_model_collection(phys)
-    phase.regenerate_models()
-
-    # stokes flow simulation to estimate permeability
-    Pin = 5e-6
-    Pout = 0
-    A = (im.shape[0]*im.shape[1]) * res**2
-    L = im.shape[1] * res
-    mu = phase['pore.viscosity'].max()
-
-    # label boundary pores
-    xmin = net.pores('xmin')
-    xmax = net.pores('xmax')
-    flow_x = op.algorithms.StokesFlow(network=net, phase=phase)
-    flow_x.set_value_BC(pores=xmin, values=Pin)
-    flow_x.set_value_BC(pores=xmax, values=Pout)
-    flow_x.run()
-
-    Q_x = flow_x.rate(pores=xmin, mode='group')[0]
-    K_x = Q_x * L * mu / (A * (Pin - Pout))
-    print(f'K_x is: {K_x/0.98e-12*1000:.2f} mD')
-
-    ymin = net.pores('ymin')
-    ymax = net.pores('ymax')
-    flow_y = op.algorithms.StokesFlow(network=net, phase=phase)
-    flow_y.set_value_BC(pores=ymin, values=Pin)
-    flow_y.set_value_BC(pores=ymax, values=Pout)
-    flow_y.run()
-
-    Q_y = flow_y.rate(pores=ymin, mode='group')[0]
-    K_y = Q_y * L * mu / (A * (Pin - Pout))
-    print(f'K_y is: {K_y/0.98e-12*1000:.2f} mD')
-
-    if im.ndim == 3:
-        zmin = net.pores('zmin')
-        zmax = net.pores('zmax')
-        flow_z = op.algorithms.StokesFlow(network=net, phase=phase)
-        flow_z.set_value_BC(pores=zmin, values=Pin)
-        flow_z.set_value_BC(pores=zmax, values=Pout)
-        flow_z.run()
-
-        Q_z = flow_z.rate(pores=zmin, mode='group')[0]
-        K_z = Q_z * L * mu / (A * (Pin - Pout))
-        print(f'K_z is: {K_z/0.98e-12*1000:.2f} mD')
-
-        K = np.average([K_x, K_y, K_z])
-        print(f'K is: {K/0.98e-12*1000:.2f} mD')
-
     # number of pore vs. skeleton clusters in network
     from scipy.sparse import csgraph as csg
     am = net.create_adjacency_matrix(fmt='coo', triu=True)
-    N, cluster_num = csg.connected_components(am, directed=False)
-    print('Pore clusters:', N)
+    Np, cluster_num = csg.connected_components(am, directed=False)
+    print('Pore clusters:', Np)
     # number of skeleton pieces
     b = square(3) if im.ndim == 2 else cube(3)
-    _, N = spim.label(input=sk.astype('bool'), structure=b)
-    print('Skeleton clusters:', N)
-
-    # export
-    if export:
-        ps.io.to_stl(~sk, 'sk')
-        ps.io.to_stl(im, 'im')
-        net['pore.coords'] += 10*res
-        proj = net.project
-        op.io.project_to_xdmf(proj, filename='network')
+    _, Ns = spim.label(input=sk.astype('bool'), structure=b)
+    print('Skeleton clusters:', Ns)
