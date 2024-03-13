@@ -729,6 +729,301 @@ def _check_skeleton_health(sk):
     return N_shells
 
 
+def _get_normal(sk, throats):
+    r"""
+    This function returns the normal along each point in the skeleton that is
+    also in 'throats'. Throats can be clusters of throat voxels or a single
+    voxel along each throat; wherever the user would like the normal to be
+    measured.
+
+    Parameters
+    ----------
+    sk : ndarray
+        The skeleton of an image
+    throats : ndarray
+        An ndarray the same shape as `im` with clusters of throat voxels
+        uniquely labelled (1...Nt). If a boolean array is provided then a
+        cluster labeling is performed with full cubic connectivity.
+
+    Returns
+    -------
+    n : ndarray
+        The unit normal vector at each non-zero voxel in throats
+    coords : ndarray
+        The coordinates at which each unit normal is found, sorted by label
+        in throats
+    """
+    # label throats if not already labelled
+    strel = ps_rect(3, ndim=im.ndim)
+    if throats.dtype == bool:
+        throats = spim.label(throats > 0, structure=strel)[0]
+    n_throat_nodes = np.sum(throats > 0)
+    # find neighbour voxels on sk
+    neighbour_coords = np.zeros((n_throat_nodes, 2, sk.ndim))
+    sk_pad = np.pad(sk, pad_width=1)  # pad skeleton to handle edges
+    # get coordinates, sorted by throat label
+    labels = throats[np.where(throats > 0)]
+    sort = np.argsort(labels)
+    coord = np.array(np.where(throats > 0)).T
+    coord = coord[sort]
+    coord += 1  # add 1 because of padding
+    # the following dilation assumes each node has two neighbours
+    # mask is False when 1st neighbour is found
+    mask = np.ones(n_throat_nodes, dtype=bool)
+    if sk.ndim == 2:
+        for i in (-1, 0, 1):
+            for j in (-1, 0, 1):
+                if i == 0 and j == 0:
+                    pass
+                else:
+                    x = coord[:, 0] + i
+                    y = coord[:, 1] + j
+                    coords = np.array([x-1, y-1]).T
+                    is_1st = sk_pad[x, y] * mask  # first neighbour
+                    neighbour_coords[:, 0, :][is_1st] = coords[is_1st]
+                    is_2nd = sk_pad[x, y] * (~mask)  # second neighbour
+                    neighbour_coords[:, 1, :][is_2nd] = coords[is_2nd]
+                    # update mask
+                    mask[is_1st] = False
+    if sk.ndim == 3:
+        for i in (-1, 0, 1):
+            for j in (-1, 0, 1):
+                for k in (-1, 0, 1):
+                    if i == 0 and j == 0 and k == 0:
+                        pass
+                    else:
+                        x = coord[:, 0] + i
+                        y = coord[:, 1] + j
+                        z = coord[:, 2] + k
+                        coords = np.array([x-1, y-1, z-1]).T
+                        is_1st = sk_pad[x, y, z] * mask  # first neighbour
+                        neighbour_coords[:, 0, :][is_1st] = coords[is_1st]
+                        is_2nd = sk_pad[x, y, z] * (~mask)  # second neighbour
+                        neighbour_coords[:, 1, :][is_2nd] = coords[is_2nd]
+                        # update mask
+                        mask[is_1st] = False
+    # calculate normal from neighbour coords!
+    n = np.diff(neighbour_coords, axis=1).reshape((n_throat_nodes, sk.ndim))
+    # make normal a unit normal
+    norm = np.linalg.norm(n, axis=1).reshape(n_throat_nodes, 1)
+    n = n/norm
+    coord -= 1
+
+    return n, coord
+
+
+def _cartesian_to_spherical(n):
+    r"""
+    This function converts from cartesian coordinates to spherical coordinates.
+
+    Parameters
+    ----------
+    n : ndarray, N by ndim
+        The unit vector in cartesian coordinates x, y, and z
+        (if three dimensions)
+
+    Returns
+    -------
+    angles : N by 2
+        The theta and phi of the unit vector where theta is measured from the
+        positive x-axis between 0 and 2pi and phi is measurd from the positive
+        z-axis between 0 and pi. Theta is in the first column and Phi is in the
+        second column.
+    """
+    # calculate theta and phi of normal
+    x = n[:, 0]
+    y = n[:, 1]
+    theta = np.arctan2(y, x)  # arctan2 is from 0 to pi
+    theta[theta<0] += 2*np.pi  # make range from 0 to 2*pi
+    if n.shape[1] == 3:
+        z = n[:, 2]
+        r = np.sqrt(x**2 + y**2 + z**2)
+        phi = np.arccos(z/r)  # arccos is from 0 to pi
+    else:
+        phi = np.pi/2  # if 2D assume z = 0 plane
+    angles = np.zeros((n.shape[0], 2))
+    angles[:, 0] = theta
+    angles[:, 1] = phi
+
+    return angles
+
+
+def walk(im, sk, path, step_size=1, max_n_steps=None):
+    r"""
+    This function converts from cartesian coordinates to spherical coordinates.
+
+    Parameters
+    ----------
+    im : ndarray (boolean)
+        Image of porous material where True indicates void and False indicates
+        solid
+    path: ndarray 1 by N_walkers by 6
+        This array is used to keep track of the positions or path that each
+        walker takes. Upon each step, this array is incremented by one in the
+        first axis. The second axis corresponds to the number of total walkers
+        while the third axis contains labels, x-coord, y-coord, z-coord, theta,
+        and phi in that order.
+    step_size : float
+        The size of each step to make. This is equivalent to r in spherical
+        coordinates.
+    max_n_steps : int (optional)
+        The maximum number of steps to take. The default is None, in which case
+        there is no maximum and the walk will stop when ALL walkers have
+        reached solid.
+
+    Returns
+    -------
+    path : N_steps by N_walkers by 6
+        The resulting path array that has been incremented after each step.
+    """
+    # parse arguments
+    if max_n_steps is None:
+        max_n_steps = np.inf
+    # now I can start my random walk...
+    i = 0  # zero walkers have reached solid
+    r = step_size
+    step = 1
+    # pad image
+    im_pad = np.pad(im, pad_width=1)
+    temp = np.pad(sk, pad_width=1)
+    # get n_walkers
+    n_walkers = path.shape[1]
+    while i < n_walkers:
+        # retrieve old coords
+        x_old = path[step-1, :, 1]
+        y_old = path[step-1, :, 2]
+        z_old = path[step-1, :, 3]
+        # check if void, add one for padding
+        x = np.round(x_old+1).astype(int)  # round and take integer
+        y = np.round(y_old+1).astype(int)
+        z = np.round(z_old+1).astype(int)
+        if im.ndim == 2:
+            is_void = im_pad[x, y]
+        else:
+            is_void = im_pad[x, y, z]
+            temp[x, y, z] = True
+        # calculate step in each direction
+        delta_x = r*np.sin(path[step-1, :, 5])*np.cos(path[step-1, :, 4])
+        delta_y = r*np.sin(path[step-1, :, 5])*np.sin(path[step-1, :, 4])
+        delta_z = r*np.cos(path[step-1, :, 5])
+        # calculate new coords
+        x_new = delta_x + x_old
+        y_new = delta_y + y_old
+        z_new = delta_z + z_old
+        # create a new row in rw...
+        new_step = np.zeros_like(path[step-1:, :, :])
+        new_step[0, :, :] = path[step-1, :, :].copy()
+        new_step[0, :, 1][is_void] = x_new[is_void]
+        new_step[0, :, 2][is_void] = y_new[is_void]
+        new_step[0, :, 3][is_void] = z_new[is_void]
+        path = np.vstack((path, new_step))
+        if step == max_n_steps:
+            break
+        # update step counter
+        step += 1
+        # update number of walkers that have reached solid
+        i = np.sum(~is_void)
+
+    return path, temp
+
+
+def get_throat_area(im, sk, throats, n_walkers, step_size=0.5):
+    r"""
+    This function returns the cross-sectional acrea of throats.
+
+    Parameters
+    ----------
+    sk : ndarray
+        The skeleton of an image
+    throats : ndarray
+        An ndarray the same shape as `im` with clusters of throat voxels
+        uniquely labelled (1...Nt). If a boolean array is provided then a
+        cluster labeling is performed with full cubic connectivity.
+
+    Returns
+    -------
+    n : ndarray
+        The unit normal vector at each non-zero voxel in throats
+    coords : ndarray
+        The coordinates at which each unit normal is found, sorted by label
+        in throats
+    """
+    # label throats if not already labelled
+    strel = ps_rect(3, ndim=im.ndim)
+    if throats.dtype == bool:
+        throats = spim.label(throats > 0, structure=strel)[0]
+    if im.ndim == 2:
+        n_walkers = 2  # overwrite n_walkers to two if 2D
+    # number of throats
+    n_throat_nodes = np.sum(throats > 0)
+    # get normal
+    n, coords = _get_normal(sk, throats)
+    # calculate theta and phi of normals
+    angles = _cartesian_to_spherical(n)
+    # FIXME: check that angles are positive in 3D?? np.sum(angles[:, 0]<0)
+    # construct "path" array for walkers
+    path = np.zeros((1, n_throat_nodes, 6))  # label, x, y, z, theta, phi
+    labels = throats[np.where(throats > 0)]
+    sort = np.argsort(labels)
+    path[0, :, 0] = labels[sort]
+    path[0, :, 1:(im.ndim+1)] = coords
+    # duplicate path by n_walkers along second axis
+    path = np.tile(path, (1, n_walkers, 1))
+    # get theta and phi of walkers
+    if sk.ndim == 2:
+        for w in range(n_walkers):
+            # In 2d we have two walkers: (theta + pi/2) and (theta - pi/2)
+            theta = angles[:, 0] + (-1)**w*np.pi/2
+            phi = angles[:, 1]
+            path[0, n_throat_nodes*w:n_throat_nodes*(w+1), 4] = theta
+            path[0, n_throat_nodes*w:n_throat_nodes*(w+1), 5] = phi
+    if sk.ndim == 3:
+        theta1 = angles[:, 0]
+        phi1 = angles[:, 1]
+        for w in range(n_walkers):
+            theta2 = w/n_walkers*2*np.pi
+            # phi2 found using dot product with normal
+            phi2 = np.arctan(-1/np.tan(phi1)/np.cos(theta1-theta2))
+            phi2[phi1 == 0] = np.pi/2  # b/c tan(0) is zero
+            phi2[phi2 < 0] += np.pi  # arctan is from -pi/2 to +pi/2
+            path[0, n_throat_nodes*w:n_throat_nodes*(w+1), 4] = theta2
+            path[0, n_throat_nodes*w:n_throat_nodes*(w+1), 5] = phi2
+    # sort array by throat label again
+    I = np.argsort(path[0, :, 0])
+    path = path[:, I, :]
+    # perform walk
+    path, temp = walk(im, sk, path, step_size)  #FIXME: remove sk
+    im_pad = np.pad(im, pad_width=1)
+    sk_pad = np.pad(sk, pad_width=1)
+    # A = temp.astype(int)*2 + im_pad.astype(int) + sk_pad.astype(int)*3
+    # ps.io.to_stl(~sk_pad, 'sk')
+    # ps.io.to_stl(im, 'im')
+    # ps.io.to_stl(~temp, 'temp')
+    # plt.imshow(temp.astype(int)*2 + im_pad.astype(int) + sk_pad.astype(int)*3)
+    # throats_pad = np.pad(throats>0, pad_width=1)
+    # A = temp.astype(int)*2 + (~im_pad).astype(int) + sk_pad.astype(int)*2 +  throats_pad.astype(int)
+    # calculate the area
+    # FIXME: 2d?
+    throat_area = np.zeros_like(throats, dtype=float)
+    for n in range(n_throat_nodes):
+        coord1 = path[-1, n*n_walkers:(n+1)*n_walkers, 1:4]
+        coord2 = path[0, n*n_walkers:(n+1)*n_walkers, 1:4]
+        r = np.sum((coord1 - coord2)**2, axis=1)**(1/2)
+        # sort
+        theta = path[0, n*n_walkers:(n+1)*n_walkers, 5]
+        sort = np.argsort(theta)
+        theta = theta[sort]
+        r = r[sort]
+        r1 = r[sort]
+        r2 = np.roll(r1, 1)
+        angle = 2*np.pi/n_walkers
+        area = np.sum(r1*r2*np.sin(angle)/2)
+        x, y, z = coord2[0].astype(int)
+        throat_area[x, y, z] = area
+    
+    return throat_area
+
+
 if __name__ == "__main__":
     '''
     Simulation using MAGNET extraction
